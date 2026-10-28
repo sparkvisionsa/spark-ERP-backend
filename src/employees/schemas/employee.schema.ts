@@ -13,7 +13,7 @@ export class Employee {
   @Prop({ required: true, select: false }) passwordHash: string;
   @Prop({ select: false }) refreshTokenHash?: string;
   @Prop({ required: true, enum: Role, index: true }) role: Role;
-  @Prop({ type: String, enum: CompanyKey, index: true, default: null }) company: CompanyKey | null;
+  @Prop({ type: String, index: true, default: null }) company: CompanyKey | null;
   @Prop({ trim: true, default: "" }) department: string;
   @Prop({ trim: true, default: "" }) jobTitle: string;
   @Prop({ type: String, default: null }) directManagerId?: string | null;

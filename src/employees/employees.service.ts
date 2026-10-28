@@ -7,10 +7,17 @@ import { AuthUser } from "../common/interfaces/auth-user.interface";
 import { CreateEmployeeDto } from "./dto/create-employee.dto";
 import { ChangeEmployeeStatusDto, ResetPasswordDto, UpdateEmployeeDto } from "./dto/update-employee.dto";
 import { Employee, EmployeeDocument } from "./schemas/employee.schema";
+import { Company, CompanyDocument } from "../companies/schemas/company.schema";
 
 @Injectable()
 export class EmployeesService {
-  constructor(@InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>) {}
+  constructor(@InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>) {}
+
+  private async validateOrganisation(company: CompanyKey, department?: string) {
+    const organisation = await this.companyModel.findOne({ key: company, active: true }).lean();
+    if (!organisation) throw new BadRequestException("الشركة غير موجودة أو غير نشطة");
+    if (department?.trim() && !(organisation.departments || []).some((entry) => entry.name === department.trim())) throw new BadRequestException("القسم لا يتبع الشركة المختارة");
+  }
 
   static normalizePhone(value?: string) {
     if (!value) return undefined;
@@ -54,6 +61,7 @@ export class EmployeesService {
 
   async create(dto: CreateEmployeeDto) {
     if (!dto.phone && !dto.email && !dto.nationalId) throw new BadRequestException("يلزم إدخال رقم الهوية أو الجوال أو البريد الإلكتروني");
+    await this.validateOrganisation(dto.company, dto.department);
     const passwordHash = await bcrypt.hash(dto.password, 12);
     try {
       return await this.employeeModel.create({ ...dto, fullName: dto.fullName?.trim() || "موظف جديد", phone: EmployeesService.normalizePhone(dto.phone), email: dto.email?.toLowerCase().trim(), passwordHash, birthDate: dto.birthDate ? new Date(dto.birthDate) : null, hireDate: dto.hireDate ? new Date(dto.hireDate) : null });
@@ -61,7 +69,14 @@ export class EmployeesService {
   }
 
   async update(id: string, dto: UpdateEmployeeDto) {
+    const current = await this.employeeModel.findOne({ _id: id, deletedAt: null }).lean();
+    if (!current) throw new NotFoundException("الموظف غير موجود أو لا يمكن تعديله");
+    const company = dto.company || current.company;
+    const companyChanged = Boolean(dto.company && dto.company !== current.company);
+    const department = dto.department === undefined ? (companyChanged ? "" : current.department) : dto.department;
+    if (company) await this.validateOrganisation(company, department);
     const update: Record<string, unknown> = { ...dto };
+    if (companyChanged && dto.department === undefined) update.department = "";
     if (dto.phone) update.phone = EmployeesService.normalizePhone(dto.phone);
     if (dto.email) update.email = dto.email.toLowerCase().trim();
     if (dto.birthDate) update.birthDate = new Date(dto.birthDate);

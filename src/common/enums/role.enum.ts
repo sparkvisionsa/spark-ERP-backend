@@ -4,10 +4,8 @@ export enum Role {
   EMPLOYEE = "EMPLOYEE"
 }
 
-export enum CompanyKey {
-  SPARK = "spark",
-  PRO = "pro"
-}
+export type CompanyKey = string;
+export const CompanyKey = { SPARK: "spark", PRO: "pro" } as const;
 
 export enum EmployeeStatus {
   ACTIVE = "ACTIVE",

@@ -8,7 +8,7 @@ export class CreateEmployeeDto {
   @ValidateIf((value) => !value.nationalId && !value.phone) @IsEmail({}, { message: "البريد الإلكتروني غير صحيح" }) email?: string;
   @IsString() @MinLength(4, { message: "الرقم السري يجب ألا يقل عن 4 أحرف" }) password: string;
   @IsIn([Role.SUPERVISOR, Role.EMPLOYEE], { message: "نوع الحساب يجب أن يكون مشرفاً أو موظفاً" }) role: Role.SUPERVISOR | Role.EMPLOYEE;
-  @IsEnum(CompanyKey, { message: "الشركة غير صحيحة" }) company: CompanyKey;
+  @IsString({ message: "الشركة غير صحيحة" }) @IsNotEmpty() company: CompanyKey;
   @IsOptional() @IsString() department?: string;
   @IsOptional() @IsString() jobTitle?: string;
   @IsOptional() @IsString() directManagerId?: string;

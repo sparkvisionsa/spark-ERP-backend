@@ -20,6 +20,7 @@ export const ChecklistItemSchema = SchemaFactory.createForClass(ChecklistItem);
 export class ProjectSubtask {
   @Prop({ required: true, trim: true }) title: string;
   @Prop({ enum: WorkStatus, default: WorkStatus.NOT_STARTED }) manualStatus: WorkStatus;
+  @Prop({ type: Date, default: null }) startedAt?: Date | null;
   @Prop({ default: 0 }) order: number;
   @Prop({ type: [ChecklistItemSchema], default: [] }) items: ChecklistItem[];
 }
@@ -32,7 +33,7 @@ export class ProjectTask {
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", required: true }) assigneeId: Types.ObjectId;
   @Prop({ type: [{ type: MongooseSchema.Types.ObjectId, ref: "Employee" }], default: [] }) helperIds: Types.ObjectId[];
   @Prop({ enum: TaskPriority, default: TaskPriority.NORMAL }) priority: TaskPriority;
-  @Prop({ type: Date, required: true }) dueDate: Date;
+  @Prop({ type: Date, default: null }) dueDate?: Date | null;
   @Prop({ enum: WorkStatus, default: WorkStatus.NOT_STARTED }) manualStatus: WorkStatus;
   @Prop({ default: 0 }) order: number;
   @Prop({ type: [ProjectSubtaskSchema], default: [] }) subtasks: ProjectSubtask[];
@@ -70,13 +71,16 @@ export const ProjectDeliverySchema = SchemaFactory.createForClass(ProjectDeliver
 @Schema({ timestamps: true, versionKey: false })
 export class Project {
   @Prop({ required: true, trim: true, index: true }) name: string;
-  @Prop({ required: true, enum: CompanyKey, index: true }) company: CompanyKey;
+  @Prop({ required: true, type: String, index: true }) company: CompanyKey;
   @Prop({ trim: true, default: "" }) client: string;
   @Prop({ trim: true, default: "" }) description: string;
   @Prop({ type: Date, default: null }) startDate?: Date | null;
-  @Prop({ type: Date, required: true, index: true }) dueDate: Date;
+  @Prop({ type: Date, default: null, index: true }) dueDate?: Date | null;
   @Prop({ type: Number, default: null, min: 0 }) budget?: number | null;
   @Prop({ enum: ProjectStatus, default: ProjectStatus.ACTIVE, index: true }) status: ProjectStatus;
+  @Prop({ default: false, index: true }) isPinned: boolean;
+  @Prop({ default: false }) isFavorite: boolean;
+  @Prop({ default: 0, index: true }) order: number;
   @Prop({ type: [{ type: MongooseSchema.Types.ObjectId, ref: "Employee" }], default: [] }) members: Types.ObjectId[];
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", required: true }) createdById: Types.ObjectId;
   @Prop({ type: [ProjectTaskSchema], default: [] }) tasks: ProjectTask[];

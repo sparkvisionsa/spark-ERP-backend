@@ -5,6 +5,7 @@ import { CompanyKey, EmployeeStatus, Role } from "../common/enums/role.enum";
 import { AuthUser } from "../common/interfaces/auth-user.interface";
 import { Employee, EmployeeDocument } from "../employees/schemas/employee.schema";
 import { Project, ProjectDocument, ProjectStatus, WorkStatus } from "../projects/schemas/project.schema";
+import { Company, CompanyDocument } from "../companies/schemas/company.schema";
 
 type AnyRecord = Record<string, any>;
 
@@ -12,7 +13,8 @@ type AnyRecord = Record<string, any>;
 export class AnalyticsService {
   constructor(
     @InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>,
-    @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>
+    @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>,
+    @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>
   ) {}
 
   private projectScope(user: AuthUser, company?: CompanyKey): FilterQuery<ProjectDocument> {
@@ -62,12 +64,13 @@ export class AnalyticsService {
     const todayEnd = this.endOfDay(now);
     const periodStart = this.startOfDay(new Date(now.getTime() - (days - 1) * 86_400_000));
 
-    const [projects, employees] = await Promise.all([
+    const [projects, employees, organisations] = await Promise.all([
       this.projectModel.find(this.projectScope(user, company))
         .populate({ path: "members", select: "fullName company role status", match: { deletedAt: null } })
         .populate({ path: "deliveries.authorId", select: "fullName company role", match: { deletedAt: null } })
         .sort({ createdAt: -1 }).lean(),
-      this.employeeModel.find(this.employeeScope(user, company)).select("fullName company role status createdAt updatedAt").lean()
+      this.employeeModel.find(this.employeeScope(user, company)).select("fullName company role status createdAt updatedAt").lean(),
+      this.companyModel.find({ active: true }).select("key").lean()
     ]);
 
     const activeProjects = projects.filter((project) => project.status === ProjectStatus.ACTIVE);
@@ -82,11 +85,11 @@ export class AnalyticsService {
     });
 
     const taskRows = projects.flatMap((project: AnyRecord) => (project.tasks || []).map((task: AnyRecord) => ({
-      project, task, progress: this.taskProgress(task), dueDate: new Date(task.dueDate)
+      project, task, progress: this.taskProgress(task), dueDate: task.dueDate ? new Date(task.dueDate) : null
     })));
     const totalTasks = taskRows.length;
     const completedTasks = taskRows.filter((row) => row.progress === 100).length;
-    const overdueTasks = taskRows.filter((row) => row.progress < 100 && row.dueDate < todayStart);
+    const overdueTasks = taskRows.filter((row) => row.progress < 100 && row.dueDate !== null && row.dueDate < todayStart);
     const deliveries = projects.flatMap((project: AnyRecord) => (project.deliveries || []).map((delivery: AnyRecord) => ({ project, delivery })));
     const deliveriesToday = deliveries.filter(({ delivery }) => { const date = new Date(delivery.createdAt); return date >= todayStart && date <= todayEnd; });
     const periodDeliveries = deliveries.filter(({ delivery }) => new Date(delivery.createdAt) >= periodStart);
@@ -100,12 +103,12 @@ export class AnalyticsService {
     for (const project of projects as AnyRecord[]) for (const member of project.members || []) if (member?._id) employeeNames.set(String(member._id), member.fullName || "موظف");
 
     const attention = overdueTasks
-      .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime())
+      .sort((a, b) => a.dueDate!.getTime() - b.dueDate!.getTime())
       .slice(0, 8)
       .map(({ project, task, dueDate, progress }) => ({
         id: String(task._id), projectId: String(project._id), taskId: String(task._id), title: task.title,
         projectName: project.name, company: project.company, assignee: employeeNames.get(String(task.assigneeId)) || "غير محدد",
-        dueDate, daysOverdue: this.daysBetween(dueDate, todayStart), progress, priority: task.priority
+        dueDate, daysOverdue: this.daysBetween(dueDate!, todayStart), progress, priority: task.priority
       }));
 
     const deliveryActivity = deliveries.map(({ project, delivery }) => {
@@ -134,7 +137,7 @@ export class AnalyticsService {
       return { date: key, added, done };
     });
 
-    const companyRows = ([CompanyKey.SPARK, CompanyKey.PRO] as CompanyKey[])
+    const companyRows = organisations.map((organisation) => organisation.key)
       .filter((key) => !company || key === company)
       .filter((key) => user.role === Role.SUPER_ADMIN || user.company === key)
       .map((key) => {
@@ -149,7 +152,7 @@ export class AnalyticsService {
           projects: scopedProjects.length, employees: scopedEmployees.length,
           activeEmployees: scopedEmployees.filter((employee) => employee.status === EmployeeStatus.ACTIVE).length,
           totalTasks: scopedTasks.length, completedTasks: scopedTasks.filter((row) => row.progress === 100).length,
-          overdueTasks: scopedTasks.filter((row) => row.progress < 100 && row.dueDate < todayStart).length,
+          overdueTasks: scopedTasks.filter((row) => row.progress < 100 && row.dueDate !== null && row.dueDate < todayStart).length,
           deliveries: scopedDeliveries.length, completionRate, trend
         };
       });

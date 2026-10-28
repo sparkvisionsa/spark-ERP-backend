@@ -7,9 +7,10 @@ import { ProjectsService } from "./projects.service";
 import { Project, ProjectSchema } from "./schemas/project.schema";
 import { DeliveriesController, ItemsController, SubtasksController, TasksController, WorkspaceController } from "./workspace.controllers";
 import { DeliveryFilesService } from "./delivery-files.service";
+import { Company, CompanySchema } from "../companies/schemas/company.schema";
 
 @Module({
-  imports: [AuthModule, MongooseModule.forFeature([{ name: Project.name, schema: ProjectSchema }, { name: Employee.name, schema: EmployeeSchema }])],
+  imports: [AuthModule, MongooseModule.forFeature([{ name: Project.name, schema: ProjectSchema }, { name: Employee.name, schema: EmployeeSchema }, { name: Company.name, schema: CompanySchema }])],
   controllers: [ProjectsController, WorkspaceController, TasksController, SubtasksController, ItemsController, DeliveriesController],
   providers: [ProjectsService, DeliveryFilesService]
 })

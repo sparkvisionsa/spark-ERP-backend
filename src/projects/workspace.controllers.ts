@@ -8,7 +8,7 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { Role } from "../common/enums/role.enum";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { AuthUser } from "../common/interfaces/auth-user.interface";
-import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
+import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, ReorderNodeDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
 import { ProjectsService } from "./projects.service";
 import { DeliveryUpload } from "./delivery-files.service";
 
@@ -19,6 +19,7 @@ import { DeliveryUpload } from "./delivery-files.service";
 export class WorkspaceController {
   constructor(private readonly projects: ProjectsService) {}
   @Get("tree") tree(@Query("projectId") projectId: string, @CurrentUser() user: AuthUser) { return this.projects.workspace(projectId, user); }
+  @Patch("reorder") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) reorder(@Body() dto: ReorderNodeDto, @CurrentUser() user: AuthUser) { return this.projects.reorderNode(dto, user); }
 }
 
 @ApiCookieAuth("spark_access")
@@ -39,7 +40,7 @@ export class TasksController {
 export class SubtasksController {
   constructor(private readonly projects: ProjectsService) {}
   @Post("task/:taskId") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) create(@Param("taskId") taskId: string, @Body() dto: CreateSubtaskDto, @CurrentUser() user: AuthUser) { return this.projects.createSubtask(taskId, dto, user); }
-  @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) update(@Param("id") id: string, @Body() dto: UpdateSubtaskDto, @CurrentUser() user: AuthUser) { return this.projects.updateSubtask(id, dto, user); }
+  @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR, Role.EMPLOYEE) update(@Param("id") id: string, @Body() dto: UpdateSubtaskDto, @CurrentUser() user: AuthUser) { return this.projects.updateSubtask(id, dto, user); }
   @Delete(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) remove(@Param("id") id: string, @Query("projectId") projectId: string, @CurrentUser() user: AuthUser) { return this.projects.deleteSubtask(id, projectId, user); }
 }
 

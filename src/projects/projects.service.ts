@@ -5,14 +5,16 @@ import { FilterQuery, Model, Types } from "mongoose";
 import { EmployeeStatus, Role } from "../common/enums/role.enum";
 import { AuthUser } from "../common/interfaces/auth-user.interface";
 import { Employee, EmployeeDocument } from "../employees/schemas/employee.schema";
+import { Company, CompanyDocument } from "../companies/schemas/company.schema";
 import { AssignProjectMembersDto, CreateProjectDto, UpdateProjectDto } from "./dto/project.dto";
-import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
+import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, ReorderNodeDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
 import { Project, ProjectDocument, ProjectStatus, TaskPriority, WorkStatus } from "./schemas/project.schema";
 import { DeliveryFilesService, DeliveryUpload } from "./delivery-files.service";
+import { reorderNodes } from "./reorder-nodes";
 
 @Injectable()
 export class ProjectsService {
-  constructor(@InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>, @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, private readonly deliveryFiles: DeliveryFilesService) {}
+  constructor(@InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>, @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>, private readonly deliveryFiles: DeliveryFilesService) {}
 
   private deliveryFileIds(deliveries: any[]) {
     return deliveries.flatMap((delivery) => (delivery.attachments || []).map((attachment: any) => String(attachment.storageId || ""))).filter(Boolean);
@@ -27,6 +29,10 @@ export class ProjectsService {
 
   private ensureCompanyAccess(user: AuthUser, company: string) {
     if (user.role === Role.SUPERVISOR && user.company !== company) throw new ForbiddenException("لا يمكنك إدارة مشاريع شركة أخرى");
+  }
+
+  private async ensureKnownCompany(company: string) {
+    if (!await this.companyModel.exists({ key: company, active: true })) throw new BadRequestException("الشركة غير موجودة أو غير نشطة");
   }
 
   private ensureManager(user: AuthUser) {
@@ -114,7 +120,7 @@ export class ProjectsService {
     const filter = this.scope(user);
     if (company && user.role === Role.SUPER_ADMIN) filter.company = company;
     filter.status = archived ? ProjectStatus.ARCHIVED : { $ne: ProjectStatus.ARCHIVED };
-    const projects = await this.projectModel.find(filter).select("-deliveries").populate({ path: "members", select: "fullName phone role company department jobTitle status", match: { deletedAt: null } }).sort({ createdAt: -1 }).lean();
+    const projects = await this.projectModel.find(filter).select("-deliveries").populate({ path: "members", select: "fullName phone role company department jobTitle status", match: { deletedAt: null } }).sort({ isPinned: -1, order: 1, createdAt: -1 }).lean();
     return projects.map((project) => this.present(project));
   }
 
@@ -126,9 +132,24 @@ export class ProjectsService {
   }
 
   async create(dto: CreateProjectDto, user: AuthUser) {
+    await this.ensureKnownCompany(dto.company);
     this.ensureCompanyAccess(user, dto.company);
     const members = await this.validateMembers(dto.company, dto.memberIds);
-    return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: new Date(dto.dueDate), budget: dto.budget, members, createdById: new Types.ObjectId(user.id) });
+    const last = await this.projectModel.findOne({ deletedAt: null, status: { $ne: ProjectStatus.ARCHIVED } }).sort({ order: -1 }).select("order").lean();
+    return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: dto.dueDate ? new Date(dto.dueDate) : null, budget: dto.budget, members, createdById: new Types.ObjectId(user.id), order: (last?.order ?? -1) + 1 });
+  }
+
+  async moveProject(id: string, direction: "up" | "down" | undefined, targetId: string | undefined, user: AuthUser) {
+    this.ensureManager(user);
+    const project = await this.findProject(id, user);
+    this.ensureCompanyAccess(user, project.company);
+    const filter = this.scope(user);
+    filter.status = project.status === ProjectStatus.ARCHIVED
+      ? ProjectStatus.ARCHIVED
+      : { $ne: ProjectStatus.ARCHIVED };
+    const rows = await this.projectModel.find(filter).sort({ order: 1, createdAt: 1 });
+    if (reorderNodes(rows, id, direction, targetId)) await Promise.all(rows.map((row) => row.save()));
+    return this.get(id, user);
   }
 
   async update(id: string, dto: UpdateProjectDto, user: AuthUser) {
@@ -139,7 +160,7 @@ export class ProjectsService {
     const update: Record<string, unknown> = { ...dto };
     delete update.memberIds;
     if (dto.startDate) update.startDate = new Date(dto.startDate);
-    if (dto.dueDate) update.dueDate = new Date(dto.dueDate);
+    if (dto.dueDate !== undefined) update.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
     if (dto.memberIds) update.members = await this.validateMembers(targetCompany, dto.memberIds);
     if (dto.status === ProjectStatus.ARCHIVED) update.archivedAt = new Date();
     if (dto.status && dto.status !== ProjectStatus.ARCHIVED) update.archivedAt = null;
@@ -187,10 +208,37 @@ export class ProjectsService {
     (project.tasks as any[]).push({
       title: dto.title.trim(), description: dto.description?.trim() || "", assigneeId: new Types.ObjectId(dto.assigneeId),
       helperIds: helperIds.map((id) => new Types.ObjectId(id)), priority: dto.priority || TaskPriority.NORMAL,
-      dueDate: new Date(dto.dueDate), order: project.tasks.length,
+      dueDate: dto.dueDate ? new Date(dto.dueDate) : null, order: project.tasks.length,
       subtasks: (dto.subtaskTitles || []).filter((title) => title.trim()).map((title, order) => ({ title: title.trim(), order, items: [] }))
     });
     await project.save();
+    return this.workspace(dto.projectId, user);
+  }
+
+  async reorderNode(dto: ReorderNodeDto, user: AuthUser) {
+    this.ensureManager(user);
+    const project = await this.findProject(dto.projectId, user);
+    if (dto.entity === "member") {
+      const members = (project.members || []).map(String);
+      const index = members.indexOf(dto.id);
+      const target = dto.targetId ? members.indexOf(dto.targetId) : index + (dto.direction === "up" ? -1 : 1);
+      if (index < 0 || target < 0 || target >= members.length) return this.workspace(dto.projectId, user);
+      const [member] = members.splice(index, 1);
+      members.splice(dto.targetId ? members.indexOf(dto.targetId) : target, 0, member);
+      project.members = members.map((member) => new Types.ObjectId(member));
+      await project.save();
+      return this.workspace(dto.projectId, user);
+    }
+    let nodes: any[];
+    if (dto.entity === "task") nodes = project.tasks as any[];
+    else if (dto.entity === "subtask") {
+      const { task } = this.getSubtask(project, dto.id);
+      nodes = task.subtasks as any[];
+    } else {
+      const { subtask } = this.getItem(project, dto.id);
+      nodes = subtask.items as any[];
+    }
+    if (reorderNodes(nodes, dto.id, dto.direction, dto.targetId)) await project.save();
     return this.workspace(dto.projectId, user);
   }
 
@@ -209,7 +257,7 @@ export class ProjectsService {
     if (dto.title !== undefined) task.title = dto.title.trim();
     if (dto.description !== undefined) task.description = dto.description.trim();
     if (dto.priority !== undefined) task.priority = dto.priority;
-    if (dto.dueDate !== undefined) task.dueDate = new Date(dto.dueDate);
+    if (dto.dueDate !== undefined) task.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
     if (dto.manualStatus !== undefined) task.manualStatus = dto.manualStatus;
     await project.save();
     return this.workspace(dto.projectId, user);
@@ -237,11 +285,17 @@ export class ProjectsService {
   }
 
   async updateSubtask(subtaskId: string, dto: UpdateSubtaskDto, user: AuthUser) {
-    this.ensureManager(user);
     const project = await this.findProject(dto.projectId, user);
-    const { subtask } = this.getSubtask(project, subtaskId);
+    const { task, subtask } = this.getSubtask(project, subtaskId);
+    if (user.role === Role.EMPLOYEE) {
+      this.ensureWorker(user, task);
+      if (dto.title !== undefined) throw new ForbiddenException("لا يمكنك تعديل اسم المرحلة");
+    } else this.ensureManager(user);
     if (dto.title !== undefined) subtask.title = dto.title.trim();
-    if (dto.manualStatus !== undefined) subtask.manualStatus = dto.manualStatus;
+    if (dto.manualStatus !== undefined) {
+      subtask.manualStatus = dto.manualStatus;
+      if (dto.manualStatus === WorkStatus.IN_PROGRESS && !subtask.startedAt) subtask.startedAt = new Date();
+    }
     await project.save();
     return this.workspace(dto.projectId, user);
   }
@@ -295,22 +349,28 @@ export class ProjectsService {
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, dto.taskId);
     this.ensureWorker(user, task);
-    if (dto.subtaskId) {
-      const target = this.getSubtask(project, dto.subtaskId);
-      if (String(target.task._id) !== dto.taskId) throw new BadRequestException("المهمة الفرعية لا تتبع المهمة المحددة");
-    }
+    let deliveryItem: any;
+    let deliverySubtask: any;
     if (dto.itemId) {
       const target = this.getItem(project, dto.itemId);
       if (String(target.task._id) !== dto.taskId) throw new BadRequestException("بند التنفيذ لا يتبع المهمة المحددة");
+      deliveryItem = target.item;
+      deliverySubtask = target.subtask;
+    } else {
+      deliverySubtask = task.subtasks?.[0];
+      if (!deliverySubtask) {
+        task.subtasks.push({ title: "قائمة تنفيذ تلقائية", order: task.subtasks.length, items: [] });
+        deliverySubtask = task.subtasks[task.subtasks.length - 1];
+      }
+      const automaticCount = task.subtasks.reduce((total: number, subtask: any) => total + (subtask.items || []).filter((item: any) => item.text.startsWith("بند تنفيذ تلقائي")).length, 0);
+      deliverySubtask.items.push({ text: `بند تنفيذ تلقائي ${automaticCount + 1}`, done: false, attachments: 0, order: deliverySubtask.items.length });
+      deliveryItem = deliverySubtask.items[deliverySubtask.items.length - 1];
     }
     const attachments = await this.deliveryFiles.storeMany(uploads, user.id);
     try {
       const firstKind = attachments[0]?.kind;
-      (project.deliveries as any[]).push({ authorId: new Types.ObjectId(user.id), taskId: dto.taskId, subtaskId: dto.subtaskId || null, itemId: dto.itemId || null, text: dto.text?.trim() || "", link: dto.link?.trim() || "", attachmentName: dto.attachmentName?.trim() || attachments[0]?.name || "", attachmentType: dto.attachmentType || (dto.link ? "link" : firstKind === "image" || firstKind === "video" ? firstKind : attachments.length ? "file" : ""), attachments });
-      if (dto.itemId) {
-        const { item } = this.getItem(project, dto.itemId);
-        item.attachments = (item.attachments || 0) + 1;
-      }
+      (project.deliveries as any[]).push({ authorId: new Types.ObjectId(user.id), taskId: dto.taskId, subtaskId: String(deliverySubtask._id), itemId: String(deliveryItem._id), text: dto.text?.trim() || "", link: dto.link?.trim() || "", attachmentName: dto.attachmentName?.trim() || attachments[0]?.name || "", attachmentType: dto.attachmentType || (dto.link ? "link" : firstKind === "image" || firstKind === "video" ? firstKind : attachments.length ? "file" : ""), attachments });
+      deliveryItem.attachments = (deliveryItem.attachments || 0) + 1;
       await project.save();
     } catch (error) {
       await this.deliveryFiles.removeMany(attachments.map((attachment) => attachment.storageId));

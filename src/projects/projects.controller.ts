@@ -6,7 +6,7 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { Role } from "../common/enums/role.enum";
 import { AuthUser } from "../common/interfaces/auth-user.interface";
 import { RolesGuard } from "../common/guards/roles.guard";
-import { AssignProjectMembersDto, CreateProjectDto, UpdateProjectDto } from "./dto/project.dto";
+import { AssignProjectMembersDto, CreateProjectDto, MoveProjectDto, UpdateProjectDto } from "./dto/project.dto";
 import { ProjectsService } from "./projects.service";
 
 @ApiTags("projects")
@@ -19,6 +19,7 @@ export class ProjectsController {
   @Get(":id") get(@Param("id") id: string, @CurrentUser() user: AuthUser) { return this.projectsService.get(id, user); }
   @Post() @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) create(@Body() dto: CreateProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.create(dto, user); }
   @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) update(@Param("id") id: string, @Body() dto: UpdateProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.update(id, dto, user); }
+  @Patch(":id/move") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) move(@Param("id") id: string, @Body() dto: MoveProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.moveProject(id, dto.direction, dto.targetId, user); }
   @Patch(":id/members") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) assign(@Param("id") id: string, @Body() dto: AssignProjectMembersDto, @CurrentUser() user: AuthUser) { return this.projectsService.assignMembers(id, dto, user); }
   @Delete(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) remove(@Param("id") id: string, @CurrentUser() user: AuthUser) { return this.projectsService.remove(id, user); }
 }

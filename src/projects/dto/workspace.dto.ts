@@ -8,7 +8,7 @@ export class CreateTaskDto {
   @IsString() @IsNotEmpty({ message: "الموظف المسؤول مطلوب" }) assigneeId: string;
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true }) helperIds?: string[];
   @IsOptional() @IsEnum(TaskPriority) priority?: TaskPriority;
-  @IsDateString({}, { message: "موعد المهمة غير صحيح" }) dueDate: string;
+  @IsOptional() @IsDateString({}, { message: "موعد المهمة غير صحيح" }) dueDate?: string | null;
   @IsOptional() @IsArray() @IsString({ each: true }) subtaskTitles?: string[];
 }
 
@@ -19,7 +19,7 @@ export class UpdateTaskDto {
   @IsOptional() @IsString() assigneeId?: string;
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true }) helperIds?: string[];
   @IsOptional() @IsEnum(TaskPriority) priority?: TaskPriority;
-  @IsOptional() @IsDateString() dueDate?: string;
+  @IsOptional() @IsDateString() dueDate?: string | null;
   @IsOptional() @IsEnum(WorkStatus) manualStatus?: WorkStatus;
 }
 
@@ -44,9 +44,15 @@ export class UpdateItemDto extends ProjectReferenceDto {
   @IsOptional() @IsBoolean() done?: boolean;
 }
 
+export class ReorderNodeDto extends ProjectReferenceDto {
+  @IsIn(["member", "task", "subtask", "item"]) entity: "member" | "task" | "subtask" | "item";
+  @IsString() @IsNotEmpty() id: string;
+  @IsOptional() @IsIn(["up", "down"]) direction?: "up" | "down";
+  @IsOptional() @IsString() targetId?: string;
+}
+
 export class CreateDeliveryDto extends ProjectReferenceDto {
   @IsString() @IsNotEmpty() taskId: string;
-  @IsOptional() @IsString() subtaskId?: string;
   @IsOptional() @IsString() itemId?: string;
   @IsOptional() @IsString() text?: string;
   @IsOptional() @IsUrl({ protocols: ["https"], require_protocol: true }, { message: "رابط التسليم يجب أن يبدأ بـ https://" }) link?: string;

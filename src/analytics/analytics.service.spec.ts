@@ -2,7 +2,7 @@ import { AnalyticsService } from "./analytics.service";
 import { WorkStatus } from "../projects/schemas/project.schema";
 
 describe("AnalyticsService progress calculations", () => {
-  const service = new AnalyticsService({} as never, {} as never) as any;
+  const service = new AnalyticsService({} as never, {} as never, {} as never) as any;
 
   it("calculates checklist completion percentage", () => {
     expect(service.itemProgress([{ done: true }, { done: false }, { done: true }])).toBe(67);
