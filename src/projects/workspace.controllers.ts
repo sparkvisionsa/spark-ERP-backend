@@ -8,7 +8,7 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { Role } from "../common/enums/role.enum";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { AuthUser } from "../common/interfaces/auth-user.interface";
-import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, ReorderNodeDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
+import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, ProjectReferenceDto, ReorderNodeDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
 import { ProjectsService } from "./projects.service";
 import { DeliveryUpload } from "./delivery-files.service";
 
@@ -29,6 +29,7 @@ export class WorkspaceController {
 export class TasksController {
   constructor(private readonly projects: ProjectsService) {}
   @Post() @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) create(@Body() dto: CreateTaskDto, @CurrentUser() user: AuthUser) { return this.projects.createTask(dto, user); }
+  @Post(":id/receive") @Roles(Role.EMPLOYEE) receive(@Param("id") id: string, @Body() dto: ProjectReferenceDto, @CurrentUser() user: AuthUser) { return this.projects.receiveTask(id, dto, user); }
   @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) update(@Param("id") id: string, @Body() dto: UpdateTaskDto, @CurrentUser() user: AuthUser) { return this.projects.updateTask(id, dto, user); }
   @Delete(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) remove(@Param("id") id: string, @Query("projectId") projectId: string, @CurrentUser() user: AuthUser) { return this.projects.deleteTask(id, projectId, user); }
 }

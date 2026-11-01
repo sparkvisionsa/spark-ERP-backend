@@ -4,12 +4,13 @@ import { CompanyKey } from "../../common/enums/role.enum";
 
 export type ProjectDocument = HydratedDocument<Project>;
 export enum ProjectStatus { ACTIVE = "ACTIVE", COMPLETED = "COMPLETED", ARCHIVED = "ARCHIVED" }
-export enum WorkStatus { NOT_STARTED = "NOT_STARTED", IN_PROGRESS = "IN_PROGRESS", COMPLETED = "COMPLETED" }
+export enum WorkStatus { NOT_STARTED = "NOT_STARTED", IN_PROGRESS = "IN_PROGRESS", PAUSED = "PAUSED", COMPLETED = "COMPLETED" }
 export enum TaskPriority { NORMAL = "NORMAL", IMPORTANT = "IMPORTANT", URGENT = "URGENT" }
 
 @Schema({ _id: true, versionKey: false })
 export class ChecklistItem {
   @Prop({ required: true, trim: true }) text: string;
+  @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
   @Prop({ default: false }) done: boolean;
   @Prop({ default: 0, min: 0 }) attachments: number;
   @Prop({ default: 0 }) order: number;
@@ -19,8 +20,11 @@ export const ChecklistItemSchema = SchemaFactory.createForClass(ChecklistItem);
 @Schema({ _id: true, versionKey: false })
 export class ProjectSubtask {
   @Prop({ required: true, trim: true }) title: string;
+  @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
   @Prop({ enum: WorkStatus, default: WorkStatus.NOT_STARTED }) manualStatus: WorkStatus;
   @Prop({ type: Date, default: null }) startedAt?: Date | null;
+  @Prop({ type: Number, default: 0, min: 0 }) elapsedSeconds: number;
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", default: null }) startedById?: Types.ObjectId | null;
   @Prop({ default: 0 }) order: number;
   @Prop({ type: [ChecklistItemSchema], default: [] }) items: ChecklistItem[];
 }
@@ -29,11 +33,13 @@ export const ProjectSubtaskSchema = SchemaFactory.createForClass(ProjectSubtask)
 @Schema({ _id: true, versionKey: false, timestamps: true })
 export class ProjectTask {
   @Prop({ required: true, trim: true }) title: string;
+  @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
   @Prop({ trim: true, default: "" }) description: string;
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", required: true }) assigneeId: Types.ObjectId;
   @Prop({ type: [{ type: MongooseSchema.Types.ObjectId, ref: "Employee" }], default: [] }) helperIds: Types.ObjectId[];
   @Prop({ enum: TaskPriority, default: TaskPriority.NORMAL }) priority: TaskPriority;
   @Prop({ type: Date, default: null }) dueDate?: Date | null;
+  @Prop({ type: [{ type: MongooseSchema.Types.ObjectId, ref: "Employee" }], default: [] }) receivedByIds: Types.ObjectId[];
   @Prop({ enum: WorkStatus, default: WorkStatus.NOT_STARTED }) manualStatus: WorkStatus;
   @Prop({ default: 0 }) order: number;
   @Prop({ type: [ProjectSubtaskSchema], default: [] }) subtasks: ProjectSubtask[];
@@ -71,6 +77,7 @@ export const ProjectDeliverySchema = SchemaFactory.createForClass(ProjectDeliver
 @Schema({ timestamps: true, versionKey: false })
 export class Project {
   @Prop({ required: true, trim: true, index: true }) name: string;
+  @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
   @Prop({ required: true, type: String, index: true }) company: CompanyKey;
   @Prop({ trim: true, default: "" }) client: string;
   @Prop({ trim: true, default: "" }) description: string;

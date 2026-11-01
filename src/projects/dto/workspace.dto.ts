@@ -1,4 +1,4 @@
-import { ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsNotEmpty, IsOptional, IsString, IsUrl } from "class-validator";
+import { ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Min } from "class-validator";
 import { TaskPriority, WorkStatus } from "../schemas/project.schema";
 
 export class CreateTaskDto {
@@ -10,6 +10,7 @@ export class CreateTaskDto {
   @IsOptional() @IsEnum(TaskPriority) priority?: TaskPriority;
   @IsOptional() @IsDateString({}, { message: "موعد المهمة غير صحيح" }) dueDate?: string | null;
   @IsOptional() @IsArray() @IsString({ each: true }) subtaskTitles?: string[];
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
 }
 
 export class UpdateTaskDto {
@@ -21,6 +22,7 @@ export class UpdateTaskDto {
   @IsOptional() @IsEnum(TaskPriority) priority?: TaskPriority;
   @IsOptional() @IsDateString() dueDate?: string | null;
   @IsOptional() @IsEnum(WorkStatus) manualStatus?: WorkStatus;
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
 }
 
 export class ProjectReferenceDto { @IsString() @IsNotEmpty() projectId: string; }
@@ -28,20 +30,24 @@ export class ProjectReferenceDto { @IsString() @IsNotEmpty() projectId: string; 
 export class CreateSubtaskDto extends ProjectReferenceDto {
   @IsString() @IsNotEmpty({ message: "عنوان المهمة الفرعية مطلوب" }) title: string;
   @IsOptional() @IsArray() @IsString({ each: true }) itemTexts?: string[];
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
 }
 
 export class UpdateSubtaskDto extends ProjectReferenceDto {
   @IsOptional() @IsString() @IsNotEmpty() title?: string;
   @IsOptional() @IsEnum(WorkStatus) manualStatus?: WorkStatus;
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
 }
 
 export class CreateItemDto extends ProjectReferenceDto {
   @IsString() @IsNotEmpty({ message: "نص بند التنفيذ مطلوب" }) text: string;
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
 }
 
 export class UpdateItemDto extends ProjectReferenceDto {
   @IsOptional() @IsString() @IsNotEmpty() text?: string;
   @IsOptional() @IsBoolean() done?: boolean;
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
 }
 
 export class ReorderNodeDto extends ProjectReferenceDto {

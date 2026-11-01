@@ -40,7 +40,7 @@ export class ProjectsService {
   }
 
   private statusProgress(status?: WorkStatus) {
-    return status === WorkStatus.COMPLETED ? 100 : status === WorkStatus.IN_PROGRESS ? 50 : 0;
+    return status === WorkStatus.COMPLETED ? 100 : status === WorkStatus.IN_PROGRESS || status === WorkStatus.PAUSED ? 50 : 0;
   }
 
   private subtaskProgress(subtask: any) {
@@ -136,7 +136,7 @@ export class ProjectsService {
     this.ensureCompanyAccess(user, dto.company);
     const members = await this.validateMembers(dto.company, dto.memberIds);
     const last = await this.projectModel.findOne({ deletedAt: null, status: { $ne: ProjectStatus.ARCHIVED } }).sort({ order: -1 }).select("order").lean();
-    return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: dto.dueDate ? new Date(dto.dueDate) : null, budget: dto.budget, members, createdById: new Types.ObjectId(user.id), order: (last?.order ?? -1) + 1 });
+    return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, budget: dto.budget, members, createdById: new Types.ObjectId(user.id), order: (last?.order ?? -1) + 1 });
   }
 
   async moveProject(id: string, direction: "up" | "down" | undefined, targetId: string | undefined, user: AuthUser) {
@@ -208,7 +208,7 @@ export class ProjectsService {
     (project.tasks as any[]).push({
       title: dto.title.trim(), description: dto.description?.trim() || "", assigneeId: new Types.ObjectId(dto.assigneeId),
       helperIds: helperIds.map((id) => new Types.ObjectId(id)), priority: dto.priority || TaskPriority.NORMAL,
-      dueDate: dto.dueDate ? new Date(dto.dueDate) : null, order: project.tasks.length,
+      dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, order: project.tasks.length,
       subtasks: (dto.subtaskTitles || []).filter((title) => title.trim()).map((title, order) => ({ title: title.trim(), order, items: [] }))
     });
     await project.save();
@@ -258,6 +258,7 @@ export class ProjectsService {
     if (dto.description !== undefined) task.description = dto.description.trim();
     if (dto.priority !== undefined) task.priority = dto.priority;
     if (dto.dueDate !== undefined) task.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+    if (dto.durationDays !== undefined) task.durationDays = dto.durationDays;
     if (dto.manualStatus !== undefined) task.manualStatus = dto.manualStatus;
     await project.save();
     return this.workspace(dto.projectId, user);
@@ -275,11 +276,67 @@ export class ProjectsService {
     return this.workspace(projectId, user);
   }
 
+  async receiveTask(taskId: string, dto: { projectId: string }, user: AuthUser) {
+    const project = await this.findProject(dto.projectId, user);
+    const task = this.getTask(project, taskId);
+    this.ensureWorker(user, task);
+    const receivedByIds = (task.receivedByIds || []) as Types.ObjectId[];
+    if (!receivedByIds.some((id) => String(id) === user.id)) {
+      receivedByIds.push(new Types.ObjectId(user.id));
+      task.receivedByIds = receivedByIds;
+      await project.save();
+    }
+    return this.workspace(dto.projectId, user);
+  }
+
+  private pauseTimedWork(node: any) {
+    if (node.startedAt) {
+      node.elapsedSeconds = (node.elapsedSeconds || 0) + Math.max(0, Math.floor((Date.now() - new Date(node.startedAt).getTime()) / 1000));
+    }
+    node.manualStatus = WorkStatus.PAUSED;
+    node.startedAt = null;
+    node.startedById = null;
+  }
+
+  private async pauseOtherEmployeeWork(
+    project: ProjectDocument,
+    employeeId: string,
+    except: { kind: "detail"; id: string },
+    user: AuthUser,
+  ) {
+    const otherProjects = await this.projectModel.find({
+      ...this.scope(user),
+      _id: { $ne: project._id },
+      "tasks.subtasks.manualStatus": WorkStatus.IN_PROGRESS,
+    });
+    const pauseInProject = (currentProject: any) => {
+      let changed = false;
+      for (const currentTask of currentProject.tasks as any[]) {
+        for (const currentDetail of currentTask.subtasks as any[]) {
+          const detailOwner = String(currentDetail.startedById || currentTask.assigneeId);
+          if (
+            currentDetail.manualStatus === WorkStatus.IN_PROGRESS &&
+            detailOwner === employeeId &&
+            !(except.kind === "detail" && String(currentDetail._id) === except.id)
+          ) {
+            this.pauseTimedWork(currentDetail);
+            changed = true;
+          }
+        }
+      }
+      return changed;
+    };
+    for (const otherProject of otherProjects) {
+      if (pauseInProject(otherProject)) await otherProject.save();
+    }
+    pauseInProject(project);
+  }
+
   async createSubtask(taskId: string, dto: CreateSubtaskDto, user: AuthUser) {
     this.ensureManager(user);
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, taskId);
-    task.subtasks.push({ title: dto.title.trim(), order: task.subtasks.length, items: (dto.itemTexts || []).filter((text) => text.trim()).map((text, order) => ({ text: text.trim(), order })) });
+    task.subtasks.push({ title: dto.title.trim(), durationDays: dto.durationDays ?? null, order: task.subtasks.length, items: (dto.itemTexts || []).filter((text) => text.trim()).map((text, order) => ({ text: text.trim(), order })) });
     await project.save();
     return this.workspace(dto.projectId, user);
   }
@@ -292,9 +349,32 @@ export class ProjectsService {
       if (dto.title !== undefined) throw new ForbiddenException("لا يمكنك تعديل اسم المرحلة");
     } else this.ensureManager(user);
     if (dto.title !== undefined) subtask.title = dto.title.trim();
+    if (dto.durationDays !== undefined) subtask.durationDays = dto.durationDays;
     if (dto.manualStatus !== undefined) {
+      if (dto.manualStatus === WorkStatus.IN_PROGRESS) {
+        const employeeId = user.role === Role.EMPLOYEE ? user.id : String(task.assigneeId);
+        if (this.subtaskProgress(subtask) >= 100) throw new BadRequestException("Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø¨Ø¯Ø¡ ØªÙØµÙŠÙ„ Ù…ÙƒØªÙ…Ù„");
+        if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
+          if (String(subtask.startedById || task.assigneeId) === employeeId) return this.workspace(dto.projectId, user);
+          throw new BadRequestException("Ø§Ù„ØªÙØµÙŠÙ„ Ù‚ÙŠØ¯ Ø§Ù„Ø¹Ù…Ù„ Ø¨ÙˆØ§Ø³Ø·Ø© Ù…ÙˆØ¸Ù Ø¢Ø®Ø±");
+        }
+        await this.pauseOtherEmployeeWork(project, employeeId, { kind: "detail", id: subtaskId }, user);
+        subtask.startedAt = new Date();
+        subtask.startedById = new Types.ObjectId(employeeId);
+      } else if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
+        if (
+          user.role === Role.EMPLOYEE &&
+          String(subtask.startedById || task.assigneeId) !== user.id
+        ) {
+          throw new ForbiddenException("Ù„Ø§ ÙŠÙ…ÙƒÙ†Ùƒ Ø¥ÙŠÙ‚Ø§Ù Ø¹Ù…Ù„ Ù…ÙˆØ¸Ù Ø¢Ø®Ø±");
+        }
+        if (subtask.startedAt) {
+          subtask.elapsedSeconds = (subtask.elapsedSeconds || 0) + Math.max(0, Math.floor((Date.now() - new Date(subtask.startedAt).getTime()) / 1000));
+        }
+        subtask.startedAt = null;
+        subtask.startedById = null;
+      }
       subtask.manualStatus = dto.manualStatus;
-      if (dto.manualStatus === WorkStatus.IN_PROGRESS && !subtask.startedAt) subtask.startedAt = new Date();
     }
     await project.save();
     return this.workspace(dto.projectId, user);
@@ -316,7 +396,7 @@ export class ProjectsService {
     const project = await this.findProject(dto.projectId, user);
     const { task, subtask } = this.getSubtask(project, subtaskId);
     if (user.role === Role.EMPLOYEE) this.ensureWorker(user, task); else this.ensureManager(user);
-    subtask.items.push({ text: dto.text.trim(), done: false, attachments: 0, order: subtask.items.length });
+    subtask.items.push({ text: dto.text.trim(), durationDays: dto.durationDays ?? null, done: false, attachments: 0, order: subtask.items.length });
     await project.save();
     return this.workspace(dto.projectId, user);
   }
@@ -326,6 +406,7 @@ export class ProjectsService {
     const { task, item } = this.getItem(project, itemId);
     this.ensureWorker(user, task);
     if (dto.text !== undefined) item.text = dto.text.trim();
+    if (dto.durationDays !== undefined) item.durationDays = dto.durationDays;
     if (dto.done !== undefined) item.done = dto.done;
     await project.save();
     return this.workspace(dto.projectId, user);

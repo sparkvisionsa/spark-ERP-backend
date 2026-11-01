@@ -1,5 +1,5 @@
 import { PartialType } from "@nestjs/swagger";
-import { ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from "class-validator";
+import { ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from "class-validator";
 import { CompanyKey } from "../../common/enums/role.enum";
 import { ProjectStatus } from "../schemas/project.schema";
 
@@ -11,6 +11,7 @@ export class CreateProjectDto {
   @IsOptional() @IsDateString({}, { message: "تاريخ البداية غير صحيح" }) startDate?: string;
   @IsOptional() @IsDateString({}, { message: "تاريخ التسليم غير صحيح" }) dueDate?: string | null;
   @IsOptional() @IsNumber() @Min(0) budget?: number;
+  @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true }) memberIds?: string[];
 }
 
