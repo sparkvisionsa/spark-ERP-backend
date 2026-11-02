@@ -4,6 +4,7 @@ import { AuthModule } from "../auth/auth.module";
 import { Employee, EmployeeSchema } from "../employees/schemas/employee.schema";
 import { Project, ProjectSchema } from "../projects/schemas/project.schema";
 import { AnalyticsController } from "./analytics.controller";
+import { PublicAnalyticsController } from "./public-analytics.controller";
 import { AnalyticsService } from "./analytics.service";
 import { Company, CompanySchema } from "../companies/schemas/company.schema";
 
@@ -16,7 +17,7 @@ import { Company, CompanySchema } from "../companies/schemas/company.schema";
       { name: Company.name, schema: CompanySchema }
     ])
   ],
-  controllers: [AnalyticsController],
+  controllers: [AnalyticsController, PublicAnalyticsController],
   providers: [AnalyticsService]
 })
 export class AnalyticsModule {}

@@ -57,6 +57,20 @@ export class AnalyticsService {
   private dateKey(date: Date) { return date.toISOString().slice(0, 10); }
   private daysBetween(from: Date, to: Date) { return Math.max(0, Math.ceil((to.getTime() - from.getTime()) / 86_400_000)); }
 
+  async publicSummary() {
+    const [projects, activeEmployees] = await Promise.all([
+      this.projectModel.find({ deletedAt: null }).select("status tasks").lean(),
+      this.employeeModel.countDocuments({ deletedAt: null, status: EmployeeStatus.ACTIVE })
+    ]);
+    const taskRows = (projects as AnyRecord[]).flatMap((project) => project.tasks || []);
+    const completedTasks = taskRows.filter((task) => this.taskProgress(task) === 100).length;
+    return {
+      activeProjects: projects.filter((project: AnyRecord) => project.status === ProjectStatus.ACTIVE).length,
+      activeEmployees,
+      completionRate: taskRows.length ? Math.round((completedTasks / taskRows.length) * 100) : 0
+    };
+  }
+
   async overview(user: AuthUser, company?: CompanyKey, requestedDays = 30) {
     const days = Math.min(365, Math.max(7, requestedDays));
     const now = new Date();
