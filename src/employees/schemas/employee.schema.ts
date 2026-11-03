@@ -4,7 +4,7 @@ import { CompanyKey, EmployeeStatus, Role } from "../../common/enums/role.enum";
 
 export type EmployeeDocument = HydratedDocument<Employee>;
 
-@Schema({ timestamps: true, versionKey: false, toJSON: { virtuals: true, transform: (_doc, ret: Record<string, any>) => { delete ret.passwordHash; delete ret.refreshTokenHash; return ret; } } })
+@Schema({ timestamps: true, versionKey: false, toJSON: { virtuals: true, transform: (_doc, ret: Record<string, any>) => { delete ret.passwordHash; delete ret.refreshTokenHash; delete ret.refreshTokenHashes; return ret; } } })
 export class Employee {
   @Prop({ trim: true, default: "موظف جديد" }) fullName: string;
   @Prop({ trim: true, unique: true, sparse: true }) nationalId?: string;
@@ -12,6 +12,7 @@ export class Employee {
   @Prop({ trim: true, lowercase: true, unique: true, sparse: true }) email?: string;
   @Prop({ required: true, select: false }) passwordHash: string;
   @Prop({ select: false }) refreshTokenHash?: string;
+  @Prop({ type: [String], select: false, default: [] }) refreshTokenHashes?: string[];
   @Prop({ required: true, enum: Role, index: true }) role: Role;
   @Prop({ type: String, index: true, default: null }) company: CompanyKey | null;
   @Prop({ trim: true, default: "" }) department: string;

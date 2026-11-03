@@ -28,7 +28,7 @@ export class WorkspaceController {
 @Controller("tasks")
 export class TasksController {
   constructor(private readonly projects: ProjectsService) {}
-  @Post() @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) create(@Body() dto: CreateTaskDto, @CurrentUser() user: AuthUser) { return this.projects.createTask(dto, user); }
+  @Post() @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR, Role.EMPLOYEE) create(@Body() dto: CreateTaskDto, @CurrentUser() user: AuthUser) { return this.projects.createTask(dto, user); }
   @Post(":id/receive") @Roles(Role.EMPLOYEE) receive(@Param("id") id: string, @Body() dto: ProjectReferenceDto, @CurrentUser() user: AuthUser) { return this.projects.receiveTask(id, dto, user); }
   @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) update(@Param("id") id: string, @Body() dto: UpdateTaskDto, @CurrentUser() user: AuthUser) { return this.projects.updateTask(id, dto, user); }
   @Delete(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) remove(@Param("id") id: string, @Query("projectId") projectId: string, @CurrentUser() user: AuthUser) { return this.projects.deleteTask(id, projectId, user); }
@@ -40,7 +40,7 @@ export class TasksController {
 @Controller("subtasks")
 export class SubtasksController {
   constructor(private readonly projects: ProjectsService) {}
-  @Post("task/:taskId") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) create(@Param("taskId") taskId: string, @Body() dto: CreateSubtaskDto, @CurrentUser() user: AuthUser) { return this.projects.createSubtask(taskId, dto, user); }
+  @Post("task/:taskId") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR, Role.EMPLOYEE) create(@Param("taskId") taskId: string, @Body() dto: CreateSubtaskDto, @CurrentUser() user: AuthUser) { return this.projects.createSubtask(taskId, dto, user); }
   @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR, Role.EMPLOYEE) update(@Param("id") id: string, @Body() dto: UpdateSubtaskDto, @CurrentUser() user: AuthUser) { return this.projects.updateSubtask(id, dto, user); }
   @Delete(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) remove(@Param("id") id: string, @Query("projectId") projectId: string, @CurrentUser() user: AuthUser) { return this.projects.deleteSubtask(id, projectId, user); }
 }

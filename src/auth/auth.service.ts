@@ -25,18 +25,28 @@ export class AuthService {
     return { id: String(employee._id), fullName: employee.fullName, phone: employee.phone, email: employee.email, nationalId: employee.nationalId, role: employee.role, company: employee.company, department: employee.department, jobTitle: employee.jobTitle, status: employee.status };
   }
 
-  private async issue(employee: EmployeeDocument | any) {
+  private async createAccessToken(employee: EmployeeDocument | any) {
     const payload = { sub: String(employee._id), role: employee.role, company: employee.company };
-    const accessToken = await this.jwt.signAsync(payload, { secret: this.config.getOrThrow<string>("JWT_ACCESS_SECRET"), expiresIn: this.config.get("JWT_ACCESS_EXPIRES", "15m") as any });
-    const refreshToken = await this.jwt.signAsync({ sub: String(employee._id), type: "refresh" }, { secret: this.config.getOrThrow<string>("JWT_REFRESH_SECRET"), expiresIn: this.config.get("JWT_REFRESH_EXPIRES", "7d") as any });
-    employee.refreshTokenHash = await bcrypt.hash(refreshToken, 12);
+    return this.jwt.signAsync(payload, { secret: this.config.getOrThrow<string>("JWT_ACCESS_SECRET"), expiresIn: this.config.get("JWT_ACCESS_EXPIRES", "24h") as any });
+  }
+
+  private async issue(employee: EmployeeDocument | any) {
+    const accessToken = await this.createAccessToken(employee);
+    const refreshToken = await this.jwt.signAsync({ sub: String(employee._id), type: "refresh" }, { secret: this.config.getOrThrow<string>("JWT_REFRESH_SECRET"), expiresIn: this.config.get("JWT_REFRESH_EXPIRES", "30d") as any });
+    const previousHashes = [
+      ...(employee.refreshTokenHashes || []),
+      ...(employee.refreshTokenHash ? [employee.refreshTokenHash] : []),
+    ];
+    // Keep refresh sessions independent for the latest ten device sign-ins.
+    employee.refreshTokenHashes = [...previousHashes, await bcrypt.hash(refreshToken, 12)].slice(-10);
+    employee.refreshTokenHash = undefined;
     employee.lastLoginAt = new Date();
     await employee.save();
     return { accessToken, refreshToken };
   }
 
   async login(dto: LoginDto) {
-    const employee = await this.employeeModel.findOne({ ...this.identifierQuery(dto.identifier), deletedAt: null }).select("+passwordHash +refreshTokenHash");
+    const employee = await this.employeeModel.findOne({ ...this.identifierQuery(dto.identifier), deletedAt: null }).select("+passwordHash +refreshTokenHash +refreshTokenHashes");
     if (!employee || employee.status === EmployeeStatus.INACTIVE || !(await bcrypt.compare(dto.password, employee.passwordHash))) throw new UnauthorizedException("بيانات الدخول غير صحيحة");
     const tokens = await this.issue(employee);
     return { ...tokens, user: this.publicUser(employee) };
@@ -46,10 +56,20 @@ export class AuthService {
     if (!token) throw new UnauthorizedException("انتهت جلسة الدخول");
     let payload: { sub: string; type: string };
     try { payload = await this.jwt.verifyAsync(token, { secret: this.config.getOrThrow<string>("JWT_REFRESH_SECRET") }); } catch { throw new UnauthorizedException("انتهت جلسة الدخول"); }
-    const employee = await this.employeeModel.findOne({ _id: payload.sub, deletedAt: null, status: { $ne: EmployeeStatus.INACTIVE } }).select("+refreshTokenHash");
-    if (!employee?.refreshTokenHash || !(await bcrypt.compare(token, employee.refreshTokenHash))) throw new UnauthorizedException("انتهت جلسة الدخول");
-    const tokens = await this.issue(employee);
-    return { ...tokens, user: this.publicUser(employee) };
+    if (payload.type !== "refresh") throw new UnauthorizedException("انتهت جلسة الدخول");
+    const employee = await this.employeeModel.findOne({ _id: payload.sub, deletedAt: null, status: { $ne: EmployeeStatus.INACTIVE } }).select("+refreshTokenHash +refreshTokenHashes");
+    const hashes = [
+      ...(employee?.refreshTokenHashes || []),
+      ...(employee?.refreshTokenHash ? [employee.refreshTokenHash] : []),
+    ];
+    let validSession = false;
+    for (const hash of hashes) {
+      if (await bcrypt.compare(token, hash)) { validSession = true; break; }
+    }
+    if (!employee || !validSession) throw new UnauthorizedException("انتهت جلسة الدخول");
+    // Keep the refresh token stable to avoid invalidating parallel requests or other open tabs.
+    const accessToken = await this.createAccessToken(employee);
+    return { accessToken, user: this.publicUser(employee) };
   }
 
   async me(user: AuthUser) {
@@ -58,8 +78,40 @@ export class AuthService {
     return this.publicUser(employee);
   }
 
-  async logout(userId?: string) {
-    if (userId) await this.employeeModel.updateOne({ _id: userId }, { $unset: { refreshTokenHash: 1 } });
+  async logout(token?: string) {
+    if (token) {
+      try {
+        const payload = await this.jwt.verifyAsync<{ sub: string; type: string }>(token, { secret: this.config.getOrThrow<string>("JWT_REFRESH_SECRET") });
+        if (payload.type === "refresh") {
+          const employee = await this.employeeModel.findById(payload.sub).select("+refreshTokenHash +refreshTokenHashes");
+          if (employee) {
+            const hashes = employee.refreshTokenHashes || [];
+            const matchingIndex = await this.findMatchingHash(token, hashes);
+            const matchesLegacy = employee.refreshTokenHash
+              ? await bcrypt.compare(token, employee.refreshTokenHash)
+              : false;
+            if (matchingIndex !== -1 || matchesLegacy) {
+              const remainingHashes = matchingIndex === -1
+                ? hashes
+                : hashes.filter((_, index) => index !== matchingIndex);
+              await this.employeeModel.updateOne(
+                { _id: employee._id },
+                { $set: { refreshTokenHashes: remainingHashes }, $unset: { refreshTokenHash: 1 } },
+              );
+            }
+          }
+        }
+      } catch {
+        // Logout still clears the browser cookies when the refresh token has expired.
+      }
+    }
     return { message: "تم تسجيل الخروج بنجاح" };
+  }
+
+  private async findMatchingHash(token: string, hashes: string[]) {
+    for (let index = 0; index < hashes.length; index += 1) {
+      if (await bcrypt.compare(token, hashes[index])) return index;
+    }
+    return -1;
   }
 }

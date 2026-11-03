@@ -134,7 +134,10 @@ export class ProjectsService {
   async create(dto: CreateProjectDto, user: AuthUser) {
     await this.ensureKnownCompany(dto.company);
     this.ensureCompanyAccess(user, dto.company);
-    const members = await this.validateMembers(dto.company, dto.memberIds);
+    if (user.role === Role.EMPLOYEE && (!user.company || user.company !== dto.company)) throw new ForbiddenException();
+    const members = user.role === Role.EMPLOYEE
+      ? await this.validateMembers(dto.company, [user.id])
+      : await this.validateMembers(dto.company, dto.memberIds);
     const last = await this.projectModel.findOne({ deletedAt: null, status: { $ne: ProjectStatus.ARCHIVED } }).sort({ order: -1 }).select("order").lean();
     return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, budget: dto.budget, members, createdById: new Types.ObjectId(user.id), order: (last?.order ?? -1) + 1 });
   }
@@ -199,11 +202,13 @@ export class ProjectsService {
   }
 
   async createTask(dto: CreateTaskDto, user: AuthUser) {
-    this.ensureManager(user);
+    if (user.role !== Role.EMPLOYEE) this.ensureManager(user);
     const project = await this.findProject(dto.projectId, user);
     this.ensureCompanyAccess(user, project.company);
+    if (user.role === Role.EMPLOYEE && dto.assigneeId !== user.id) throw new ForbiddenException();
     if (!Types.ObjectId.isValid(dto.assigneeId) || !(project.members || []).some((id) => String(id) === dto.assigneeId)) throw new BadRequestException("الموظف المسؤول يجب أن يكون ضمن فريق المشروع");
     const helperIds = dto.helperIds || [];
+    if (user.role === Role.EMPLOYEE && helperIds.length) throw new ForbiddenException();
     if (helperIds.some((id) => !Types.ObjectId.isValid(id) || !(project.members || []).some((memberId) => String(memberId) === id))) throw new BadRequestException("الفريق المساعد يجب أن يكون ضمن فريق المشروع");
     (project.tasks as any[]).push({
       title: dto.title.trim(), description: dto.description?.trim() || "", assigneeId: new Types.ObjectId(dto.assigneeId),
@@ -333,9 +338,10 @@ export class ProjectsService {
   }
 
   async createSubtask(taskId: string, dto: CreateSubtaskDto, user: AuthUser) {
-    this.ensureManager(user);
+    if (user.role !== Role.EMPLOYEE) this.ensureManager(user);
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, taskId);
+    this.ensureWorker(user, task);
     task.subtasks.push({ title: dto.title.trim(), durationDays: dto.durationDays ?? null, order: task.subtasks.length, items: (dto.itemTexts || []).filter((text) => text.trim()).map((text, order) => ({ text: text.trim(), order })) });
     await project.save();
     return this.workspace(dto.projectId, user);

@@ -17,7 +17,7 @@ export class ProjectsController {
   constructor(private readonly projectsService: ProjectsService) {}
   @Get() list(@CurrentUser() user: AuthUser, @Query("company") company?: string, @Query("archived") archived?: string) { return this.projectsService.list(user, company, archived === "true"); }
   @Get(":id") get(@Param("id") id: string, @CurrentUser() user: AuthUser) { return this.projectsService.get(id, user); }
-  @Post() @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) create(@Body() dto: CreateProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.create(dto, user); }
+  @Post() @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR, Role.EMPLOYEE) create(@Body() dto: CreateProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.create(dto, user); }
   @Patch(":id") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) update(@Param("id") id: string, @Body() dto: UpdateProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.update(id, dto, user); }
   @Patch(":id/move") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) move(@Param("id") id: string, @Body() dto: MoveProjectDto, @CurrentUser() user: AuthUser) { return this.projectsService.moveProject(id, dto.direction, dto.targetId, user); }
   @Patch(":id/members") @Roles(Role.SUPER_ADMIN, Role.SUPERVISOR) assign(@Param("id") id: string, @Body() dto: AssignProjectMembersDto, @CurrentUser() user: AuthUser) { return this.projectsService.assignMembers(id, dto, user); }

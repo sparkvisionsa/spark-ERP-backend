@@ -89,21 +89,24 @@ export class EmployeesService {
   }
 
   async changeStatus(id: string, dto: ChangeEmployeeStatusDto) {
-    const employee = await this.employeeModel.findOneAndUpdate({ _id: id, deletedAt: null, role: { $ne: Role.SUPER_ADMIN } }, { status: dto.status }, { new: true });
+    const update = dto.status === EmployeeStatus.INACTIVE
+      ? { status: dto.status, refreshTokenHash: null, refreshTokenHashes: [] }
+      : { status: dto.status };
+    const employee = await this.employeeModel.findOneAndUpdate({ _id: id, deletedAt: null, role: { $ne: Role.SUPER_ADMIN } }, update, { new: true });
     if (!employee) throw new NotFoundException("الموظف غير موجود أو لا يمكن تعديل حالته");
     return employee;
   }
 
   async resetPassword(id: string, dto: ResetPasswordDto) {
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    const employee = await this.employeeModel.findOneAndUpdate({ _id: id, deletedAt: null, role: { $ne: Role.SUPER_ADMIN } }, { passwordHash, refreshTokenHash: null }, { new: true });
+    const employee = await this.employeeModel.findOneAndUpdate({ _id: id, deletedAt: null, role: { $ne: Role.SUPER_ADMIN } }, { passwordHash, refreshTokenHash: null, refreshTokenHashes: [] }, { new: true });
     if (!employee) throw new NotFoundException("الموظف غير موجود أو لا يمكن إعادة تعيين رقمه السري");
     return { message: "تم تحديث الرقم السري بنجاح" };
   }
 
   async remove(id: string, currentUser: AuthUser) {
     if (id === currentUser.id) throw new ForbiddenException("لا يمكنك حذف حسابك الحالي");
-    const employee = await this.employeeModel.findOneAndUpdate({ _id: id, deletedAt: null, role: { $ne: Role.SUPER_ADMIN } }, { deletedAt: new Date(), status: EmployeeStatus.INACTIVE, refreshTokenHash: null }, { new: true });
+    const employee = await this.employeeModel.findOneAndUpdate({ _id: id, deletedAt: null, role: { $ne: Role.SUPER_ADMIN } }, { deletedAt: new Date(), status: EmployeeStatus.INACTIVE, refreshTokenHash: null, refreshTokenHashes: [] }, { new: true });
     if (!employee) throw new NotFoundException("الموظف غير موجود أو لا يمكن حذفه");
     return { message: "تم حذف الموظف بنجاح" };
   }

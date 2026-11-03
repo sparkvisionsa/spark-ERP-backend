@@ -14,13 +14,30 @@ import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 export class AuthController {
   constructor(private readonly authService: AuthService, private readonly config: ConfigService) {}
 
-  private cookieOptions(maxAge: number) {
-    return { httpOnly: true, sameSite: "lax" as const, secure: this.config.get("NODE_ENV") === "production", path: "/", maxAge };
+  private lifetimeMilliseconds(value: string | undefined, fallback: number) {
+    const match = /^(\d+)(s|m|h|d)$/.exec(value?.trim() || "");
+    if (!match) return fallback;
+    const scale = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "s" | "m" | "h" | "d"];
+    return Number(match[1]) * scale;
   }
 
-  private setCookies(response: Response, tokens: { accessToken: string; refreshToken: string }) {
-    response.cookie("spark_access", tokens.accessToken, this.cookieOptions(15 * 60 * 1000));
-    response.cookie("spark_refresh", tokens.refreshToken, this.cookieOptions(7 * 24 * 60 * 60 * 1000));
+  private cookieOptions(maxAge: number) {
+    const production = this.config.get("NODE_ENV") === "production";
+    return { httpOnly: true, sameSite: production ? "none" as const : "lax" as const, secure: production, path: "/", maxAge };
+  }
+
+  private clearCookies(response: Response) {
+    const production = this.config.get("NODE_ENV") === "production";
+    const options = { httpOnly: true, sameSite: production ? "none" as const : "lax" as const, secure: production, path: "/" };
+    response.clearCookie("spark_access", options);
+    response.clearCookie("spark_refresh", options);
+  }
+
+  private setCookies(response: Response, tokens: { accessToken: string; refreshToken?: string }) {
+    const accessMaxAge = this.lifetimeMilliseconds(this.config.get<string>("JWT_ACCESS_EXPIRES"), 24 * 60 * 60 * 1000);
+    const refreshMaxAge = this.lifetimeMilliseconds(this.config.get<string>("JWT_REFRESH_EXPIRES"), 30 * 24 * 60 * 60 * 1000);
+    response.cookie("spark_access", tokens.accessToken, this.cookieOptions(accessMaxAge));
+    if (tokens.refreshToken) response.cookie("spark_refresh", tokens.refreshToken, this.cookieOptions(refreshMaxAge));
   }
 
   @Post("login")
@@ -33,9 +50,14 @@ export class AuthController {
 
   @Post("refresh")
   async refresh(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
-    const result = await this.authService.refresh(request.cookies?.spark_refresh);
-    this.setCookies(response, result);
-    return { user: result.user };
+    try {
+      const result = await this.authService.refresh(request.cookies?.spark_refresh);
+      this.setCookies(response, result);
+      return { user: result.user };
+    } catch (error) {
+      this.clearCookies(response);
+      throw error;
+    }
   }
 
   @Get("me")
@@ -43,11 +65,9 @@ export class AuthController {
   me(@CurrentUser() user: AuthUser) { return this.authService.me(user); }
 
   @Post("logout")
-  @UseGuards(JwtAuthGuard)
-  async logout(@CurrentUser() user: AuthUser, @Res({ passthrough: true }) response: Response) {
-    await this.authService.logout(user.id);
-    response.clearCookie("spark_access", { path: "/" });
-    response.clearCookie("spark_refresh", { path: "/" });
+  async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    await this.authService.logout(request.cookies?.spark_refresh);
+    this.clearCookies(response);
     return { message: "تم تسجيل الخروج بنجاح" };
   }
 }
