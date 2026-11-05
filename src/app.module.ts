@@ -10,6 +10,7 @@ import { AnalyticsModule } from "./analytics/analytics.module";
 import { SettingsModule } from "./settings/settings.module";
 import { HrModule } from "./hr/hr.module";
 import { CompaniesModule } from "./companies/companies.module";
+import { TranslationModule } from "./translation/translation.module";
 
 @Module({
   imports: [
@@ -22,7 +23,8 @@ import { CompaniesModule } from "./companies/companies.module";
     AnalyticsModule,
     SettingsModule,
     HrModule
-    , CompaniesModule
+    , CompaniesModule,
+    TranslationModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard }

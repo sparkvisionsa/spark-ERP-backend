@@ -57,6 +57,24 @@ export class ProjectsService {
     return progress === 100 ? WorkStatus.COMPLETED : progress > 0 ? WorkStatus.IN_PROGRESS : WorkStatus.NOT_STARTED;
   }
 
+  private hasStartedWork(tasks: any[]) {
+    return tasks.some((task: any) =>
+      task.progress > 0 ||
+      task.manualStatus === WorkStatus.IN_PROGRESS ||
+      task.manualStatus === WorkStatus.PAUSED ||
+      task.manualStatus === WorkStatus.COMPLETED ||
+      (task.subtasks || []).some((subtask: any) =>
+        subtask.progress > 0 ||
+        Boolean(subtask.startedAt) ||
+        Number(subtask.elapsedSeconds || 0) > 0 ||
+        subtask.manualStatus === WorkStatus.IN_PROGRESS ||
+        subtask.manualStatus === WorkStatus.PAUSED ||
+        subtask.manualStatus === WorkStatus.COMPLETED ||
+        (subtask.items || []).some((item: any) => Boolean(item.done)),
+      ),
+    );
+  }
+
   private present(raw: any, includeDeliveries = false) {
     const tasks = [...(raw.tasks || [])].sort((a: any, b: any) => a.order - b.order).map((task: any) => {
       const subtasks = [...(task.subtasks || [])].sort((a: any, b: any) => a.order - b.order).map((subtask: any) => {
@@ -68,7 +86,7 @@ export class ProjectsService {
       return { ...task, subtasks, progress, derivedStatus: this.derivedStatus(progress) };
     });
     const progress = tasks.length ? Math.round(tasks.reduce((sum: number, task: any) => sum + task.progress, 0) / tasks.length) : 0;
-    const result = { ...raw, tasks, progress, derivedStatus: this.derivedStatus(progress), totalTasks: tasks.length };
+    const result = { ...raw, tasks, progress, derivedStatus: this.derivedStatus(progress), hasStartedWork: this.hasStartedWork(tasks), totalTasks: tasks.length };
     if (!includeDeliveries) delete result.deliveries;
     return result;
   }
@@ -359,12 +377,13 @@ export class ProjectsService {
     if (dto.manualStatus !== undefined) {
       if (dto.manualStatus === WorkStatus.IN_PROGRESS) {
         const employeeId = user.role === Role.EMPLOYEE ? user.id : String(task.assigneeId);
-        if (this.subtaskProgress(subtask) >= 100) throw new BadRequestException("Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø¨Ø¯Ø¡ ØªÙØµÙŠÙ„ Ù…ÙƒØªÙ…Ù„");
+        if (this.subtaskProgress(subtask) >= 100) throw new BadRequestException("لا يمكن بدء تفصيل مكتمل");
         if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
           if (String(subtask.startedById || task.assigneeId) === employeeId) return this.workspace(dto.projectId, user);
-          throw new BadRequestException("Ø§Ù„ØªÙØµÙŠÙ„ Ù‚ÙŠØ¯ Ø§Ù„Ø¹Ù…Ù„ Ø¨ÙˆØ§Ø³Ø·Ø© Ù…ÙˆØ¸Ù Ø¢Ø®Ø±");
+          throw new BadRequestException("التفصيل قيد العمل بواسطة موظف آخر");
         }
         await this.pauseOtherEmployeeWork(project, employeeId, { kind: "detail", id: subtaskId }, user);
+        if (!subtask.firstStartedAt) subtask.firstStartedAt = new Date();
         subtask.startedAt = new Date();
         subtask.startedById = new Types.ObjectId(employeeId);
       } else if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
@@ -372,13 +391,16 @@ export class ProjectsService {
           user.role === Role.EMPLOYEE &&
           String(subtask.startedById || task.assigneeId) !== user.id
         ) {
-          throw new ForbiddenException("Ù„Ø§ ÙŠÙ…ÙƒÙ†Ùƒ Ø¥ÙŠÙ‚Ø§Ù Ø¹Ù…Ù„ Ù…ÙˆØ¸Ù Ø¢Ø®Ø±");
+          throw new ForbiddenException("لا يمكنك إيقاف عمل موظف آخر");
         }
         if (subtask.startedAt) {
           subtask.elapsedSeconds = (subtask.elapsedSeconds || 0) + Math.max(0, Math.floor((Date.now() - new Date(subtask.startedAt).getTime()) / 1000));
         }
         subtask.startedAt = null;
         subtask.startedById = null;
+      }
+      if (dto.manualStatus === WorkStatus.COMPLETED) {
+        for (const item of subtask.items || []) item.done = true;
       }
       subtask.manualStatus = dto.manualStatus;
     }
@@ -409,11 +431,33 @@ export class ProjectsService {
 
   async updateItem(itemId: string, dto: UpdateItemDto, user: AuthUser) {
     const project = await this.findProject(dto.projectId, user);
-    const { task, item } = this.getItem(project, itemId);
+    const { task, subtask, item } = this.getItem(project, itemId);
     this.ensureWorker(user, task);
     if (dto.text !== undefined) item.text = dto.text.trim();
     if (dto.durationDays !== undefined) item.durationDays = dto.durationDays;
-    if (dto.done !== undefined) item.done = dto.done;
+    if (dto.done !== undefined) {
+      item.done = dto.done;
+      const allItemsCompleted =
+        subtask.items.length > 0 &&
+        subtask.items.every((entry: any) => Boolean(entry.done));
+      if (allItemsCompleted) {
+        if (subtask.startedAt) {
+          subtask.elapsedSeconds =
+            (subtask.elapsedSeconds || 0) +
+            Math.max(
+              0,
+              Math.floor(
+                (Date.now() - new Date(subtask.startedAt).getTime()) / 1000,
+              ),
+            );
+        }
+        subtask.manualStatus = WorkStatus.COMPLETED;
+        subtask.startedAt = null;
+        subtask.startedById = null;
+      } else if (subtask.manualStatus === WorkStatus.COMPLETED) {
+        subtask.manualStatus = WorkStatus.NOT_STARTED;
+      }
+    }
     await project.save();
     return this.workspace(dto.projectId, user);
   }

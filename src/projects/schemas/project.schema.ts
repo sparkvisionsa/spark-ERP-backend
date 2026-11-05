@@ -22,6 +22,7 @@ export class ProjectSubtask {
   @Prop({ required: true, trim: true }) title: string;
   @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
   @Prop({ enum: WorkStatus, default: WorkStatus.NOT_STARTED }) manualStatus: WorkStatus;
+  @Prop({ type: Date, default: null }) firstStartedAt?: Date | null;
   @Prop({ type: Date, default: null }) startedAt?: Date | null;
   @Prop({ type: Number, default: 0, min: 0 }) elapsedSeconds: number;
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", default: null }) startedById?: Types.ObjectId | null;

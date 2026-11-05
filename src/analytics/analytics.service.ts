@@ -37,13 +37,21 @@ export class AnalyticsService {
     return Math.round((items.filter((item) => item.done).length / items.length) * 100);
   }
 
+  private statusProgress(status?: WorkStatus) {
+    return status === WorkStatus.COMPLETED
+      ? 100
+      : status === WorkStatus.IN_PROGRESS || status === WorkStatus.PAUSED
+        ? 50
+        : 0;
+  }
+
   private subtaskProgress(subtask: AnyRecord) {
-    if (!subtask.items?.length) return subtask.manualStatus === WorkStatus.COMPLETED ? 100 : subtask.manualStatus === WorkStatus.IN_PROGRESS ? 50 : 0;
+    if (!subtask.items?.length) return this.statusProgress(subtask.manualStatus);
     return this.itemProgress(subtask.items);
   }
 
   private taskProgress(task: AnyRecord) {
-    if (!task.subtasks?.length) return task.manualStatus === WorkStatus.COMPLETED ? 100 : task.manualStatus === WorkStatus.IN_PROGRESS ? 50 : 0;
+    if (!task.subtasks?.length) return this.statusProgress(task.manualStatus);
     return Math.round(task.subtasks.reduce((sum: number, subtask: AnyRecord) => sum + this.subtaskProgress(subtask), 0) / task.subtasks.length);
   }
 
@@ -52,10 +60,50 @@ export class AnalyticsService {
     return Math.round(project.tasks.reduce((sum: number, task: AnyRecord) => sum + this.taskProgress(task), 0) / project.tasks.length);
   }
 
+  private projectHasStartedWork(project: AnyRecord) {
+    return (project.tasks || []).some((task: AnyRecord) =>
+      this.taskProgress(task) > 0 ||
+      task.manualStatus === WorkStatus.IN_PROGRESS ||
+      task.manualStatus === WorkStatus.PAUSED ||
+      task.manualStatus === WorkStatus.COMPLETED ||
+      (task.subtasks || []).some((subtask: AnyRecord) =>
+        this.subtaskProgress(subtask) > 0 ||
+        Boolean(subtask.firstStartedAt) ||
+        Boolean(subtask.startedAt) ||
+        Number(subtask.elapsedSeconds || 0) > 0 ||
+        subtask.manualStatus === WorkStatus.IN_PROGRESS ||
+        subtask.manualStatus === WorkStatus.PAUSED ||
+        subtask.manualStatus === WorkStatus.COMPLETED ||
+        (subtask.items || []).some((item: AnyRecord) => Boolean(item.done)),
+      ),
+    );
+  }
+
+  private isProjectInProgress(project: AnyRecord) {
+    return (
+      project.status !== ProjectStatus.ARCHIVED &&
+      project.status !== ProjectStatus.COMPLETED &&
+      this.projectProgress(project) < 100 &&
+      this.projectHasStartedWork(project)
+    );
+  }
+
   private startOfDay(date: Date) { const value = new Date(date); value.setHours(0, 0, 0, 0); return value; }
   private endOfDay(date: Date) { const value = new Date(date); value.setHours(23, 59, 59, 999); return value; }
   private dateKey(date: Date) { return date.toISOString().slice(0, 10); }
   private daysBetween(from: Date, to: Date) { return Math.max(0, Math.ceil((to.getTime() - from.getTime()) / 86_400_000)); }
+
+  private isOverdueProjectTask(
+    row: { project: AnyRecord; progress: number; dueDate: Date | null },
+    todayStart: Date,
+  ) {
+    return (
+      row.project.status !== ProjectStatus.ARCHIVED &&
+      row.progress < 100 &&
+      row.dueDate !== null &&
+      row.dueDate < todayStart
+    );
+  }
 
   async publicSummary() {
     const [projects, activeEmployees] = await Promise.all([
@@ -65,7 +113,7 @@ export class AnalyticsService {
     const taskRows = (projects as AnyRecord[]).flatMap((project) => project.tasks || []);
     const completedTasks = taskRows.filter((task) => this.taskProgress(task) === 100).length;
     return {
-      activeProjects: projects.filter((project: AnyRecord) => project.status === ProjectStatus.ACTIVE).length,
+      activeProjects: projects.filter((project: AnyRecord) => this.isProjectInProgress(project)).length,
       activeEmployees,
       completionRate: taskRows.length ? Math.round((completedTasks / taskRows.length) * 100) : 0
     };
@@ -87,13 +135,14 @@ export class AnalyticsService {
       this.companyModel.find({ active: true }).select("key").lean()
     ]);
 
-    const activeProjects = projects.filter((project) => project.status === ProjectStatus.ACTIVE);
+    const activeProjects = projects.filter((project) => this.isProjectInProgress(project));
     const projectRows = projects.map((project: AnyRecord) => {
       const tasks = project.tasks || [];
       const completedTasks = tasks.filter((task: AnyRecord) => this.taskProgress(task) === 100).length;
       return {
         id: String(project._id), name: project.name, company: project.company, client: project.client || "",
         dueDate: project.dueDate, status: project.status, progress: this.projectProgress(project),
+        inProgress: this.isProjectInProgress(project),
         totalTasks: tasks.length, completedTasks
       };
     });
@@ -103,7 +152,9 @@ export class AnalyticsService {
     })));
     const totalTasks = taskRows.length;
     const completedTasks = taskRows.filter((row) => row.progress === 100).length;
-    const overdueTasks = taskRows.filter((row) => row.progress < 100 && row.dueDate !== null && row.dueDate < todayStart);
+    const overdueTasks = taskRows.filter((row) =>
+      this.isOverdueProjectTask(row, todayStart),
+    );
     const deliveries = projects.flatMap((project: AnyRecord) => (project.deliveries || []).map((delivery: AnyRecord) => ({ project, delivery })));
     const deliveriesToday = deliveries.filter(({ delivery }) => { const date = new Date(delivery.createdAt); return date >= todayStart && date <= todayEnd; });
     const periodDeliveries = deliveries.filter(({ delivery }) => new Date(delivery.createdAt) >= periodStart);
@@ -162,11 +213,13 @@ export class AnalyticsService {
         const completionRate = scopedTasks.length ? Math.round((scopedTasks.filter((row) => row.progress === 100).length / scopedTasks.length) * 100) : 0;
         const trend = weekly.map((day) => ({ date: day.date, value: deliveries.filter(({ project, delivery }) => project.company === key && this.dateKey(new Date(delivery.createdAt)) === day.date).length + scopedTasks.filter((row) => row.progress === 100 && this.dateKey(new Date(row.task.updatedAt || row.project.updatedAt)) === day.date).length }));
         return {
-          key, activeProjects: scopedProjects.filter((project) => project.status === ProjectStatus.ACTIVE).length,
+          key, activeProjects: scopedProjects.filter((project) => project.inProgress).length,
           projects: scopedProjects.length, employees: scopedEmployees.length,
           activeEmployees: scopedEmployees.filter((employee) => employee.status === EmployeeStatus.ACTIVE).length,
           totalTasks: scopedTasks.length, completedTasks: scopedTasks.filter((row) => row.progress === 100).length,
-          overdueTasks: scopedTasks.filter((row) => row.progress < 100 && row.dueDate !== null && row.dueDate < todayStart).length,
+          overdueTasks: scopedTasks.filter((row) =>
+            this.isOverdueProjectTask(row, todayStart),
+          ).length,
           deliveries: scopedDeliveries.length, completionRate, trend
         };
       });
