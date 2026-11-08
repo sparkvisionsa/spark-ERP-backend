@@ -5,6 +5,7 @@ import { CompanyKey } from "../../common/enums/role.enum";
 export type ProjectDocument = HydratedDocument<Project>;
 export enum ProjectStatus { ACTIVE = "ACTIVE", COMPLETED = "COMPLETED", ARCHIVED = "ARCHIVED" }
 export enum WorkStatus { NOT_STARTED = "NOT_STARTED", IN_PROGRESS = "IN_PROGRESS", PAUSED = "PAUSED", COMPLETED = "COMPLETED" }
+export enum WorkPauseReason { MANUAL = "MANUAL", SWITCHED_TASK = "SWITCHED_TASK", ATTENDANCE_CHECKOUT = "ATTENDANCE_CHECKOUT", ATTENDANCE_BREAK = "ATTENDANCE_BREAK" }
 export enum TaskPriority { NORMAL = "NORMAL", IMPORTANT = "IMPORTANT", URGENT = "URGENT" }
 
 @Schema({ _id: true, versionKey: false })
@@ -26,6 +27,9 @@ export class ProjectSubtask {
   @Prop({ type: Date, default: null }) startedAt?: Date | null;
   @Prop({ type: Number, default: 0, min: 0 }) elapsedSeconds: number;
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", default: null }) startedById?: Types.ObjectId | null;
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", default: null }) lastWorkedById?: Types.ObjectId | null;
+  @Prop({ type: Date, default: null }) pausedAt?: Date | null;
+  @Prop({ type: String, enum: WorkPauseReason, default: null }) pauseReason?: WorkPauseReason | null;
   @Prop({ default: 0 }) order: number;
   @Prop({ type: [ChecklistItemSchema], default: [] }) items: ChecklistItem[];
 }
@@ -34,6 +38,7 @@ export const ProjectSubtaskSchema = SchemaFactory.createForClass(ProjectSubtask)
 @Schema({ _id: true, versionKey: false, timestamps: true })
 export class ProjectTask {
   @Prop({ required: true, trim: true }) title: string;
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", default: null }) createdById?: Types.ObjectId | null;
   @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
   @Prop({ trim: true, default: "" }) description: string;
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: "Employee", required: true }) assigneeId: Types.ObjectId;

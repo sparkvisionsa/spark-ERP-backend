@@ -19,6 +19,24 @@ export class HrController {
   @Get("employees/:employeeId")
   get(@Param("employeeId") employeeId: string, @CurrentUser() user: AuthUser) { return this.service.get(employeeId, user); }
 
+  @Get("attendance/me") @Roles(Role.SUPERVISOR, Role.EMPLOYEE)
+  attendanceStatus(@CurrentUser() user: AuthUser) { return this.service.attendanceStatus(user); }
+
+  @Get("attendance/overview") @Roles(Role.SUPER_ADMIN)
+  attendanceOverview() { return this.service.attendanceOverview(); }
+
+  @Post("attendance/check-in") @Roles(Role.SUPERVISOR, Role.EMPLOYEE)
+  checkIn(@CurrentUser() user: AuthUser) { return this.service.checkIn(user); }
+
+  @Post("attendance/check-out") @Roles(Role.SUPERVISOR, Role.EMPLOYEE)
+  checkOut(@CurrentUser() user: AuthUser) { return this.service.checkOut(user); }
+
+  @Post("attendance/break/start") @Roles(Role.SUPERVISOR, Role.EMPLOYEE)
+  startBreak(@CurrentUser() user: AuthUser) { return this.service.startBreak(user); }
+
+  @Post("attendance/break/end") @Roles(Role.SUPERVISOR, Role.EMPLOYEE)
+  endBreak(@CurrentUser() user: AuthUser) { return this.service.endBreak(user); }
+
   @Post("employees/:employeeId/leaves") @Roles(Role.SUPER_ADMIN)
   addLeave(@Param("employeeId") employeeId: string, @Body() dto: CreateLeaveDto) { return this.service.addLeave(employeeId, dto); }
 

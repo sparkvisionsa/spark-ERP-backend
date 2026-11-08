@@ -8,13 +8,15 @@ import { Employee, EmployeeDocument } from "../employees/schemas/employee.schema
 import { Company, CompanyDocument } from "../companies/schemas/company.schema";
 import { AssignProjectMembersDto, CreateProjectDto, UpdateProjectDto } from "./dto/project.dto";
 import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, ReorderNodeDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
-import { Project, ProjectDocument, ProjectStatus, TaskPriority, WorkStatus } from "./schemas/project.schema";
+import { Project, ProjectDocument, ProjectStatus, TaskPriority, WorkPauseReason, WorkStatus } from "./schemas/project.schema";
 import { DeliveryFilesService, DeliveryUpload } from "./delivery-files.service";
 import { reorderNodes } from "./reorder-nodes";
+import { deriveTaskWorkStatus, employeeChecklistUpdateIssue, taskReceiptIssue } from "./checklist-rules";
+import { AttendanceStatus, HrRecord, HrRecordDocument } from "../hr/schemas/hr-record.schema";
 
 @Injectable()
 export class ProjectsService {
-  constructor(@InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>, @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>, private readonly deliveryFiles: DeliveryFilesService) {}
+  constructor(@InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>, @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>, @InjectModel(HrRecord.name) private readonly hrModel: Model<HrRecordDocument>, private readonly deliveryFiles: DeliveryFilesService) {}
 
   private deliveryFileIds(deliveries: any[]) {
     return deliveries.flatMap((delivery) => (delivery.attachments || []).map((attachment: any) => String(attachment.storageId || ""))).filter(Boolean);
@@ -39,6 +41,23 @@ export class ProjectsService {
     if (user.role !== Role.SUPER_ADMIN && user.role !== Role.SUPERVISOR) throw new ForbiddenException("لا تملك صلاحية إدارة المشروع");
   }
 
+  private async ensureAttendanceStarted(employeeId: string) {
+    const dateParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Riyadh", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(new Date());
+    const part = (type: Intl.DateTimeFormatPartTypes) => dateParts.find((entry) => entry.type === type)?.value || "";
+    const dateKey = `${part("year")}-${part("month")}-${part("day")}`;
+    const attendanceRecord = await this.hrModel.findOne({
+      employeeId: new Types.ObjectId(employeeId),
+      attendance: { $elemMatch: { dateKey, status: AttendanceStatus.WORKING, checkedOutAt: null } },
+    }).select("attendance").lean();
+    const activeShift = (attendanceRecord?.attendance || []).find((entry: any) => entry.dateKey === dateKey && entry.status === AttendanceStatus.WORKING && !entry.checkedOutAt) as any;
+    if (!activeShift) throw new BadRequestException("يجب بدء الدوام قبل بدء أو استئناف أي مهمة");
+    if ((activeShift.breaks || []).some((entry: any) => entry.startedAt && !entry.endedAt)) {
+      throw new BadRequestException("يجب إنهاء البريك قبل بدء أو استئناف أي مهمة");
+    }
+  }
+
   private statusProgress(status?: WorkStatus) {
     return status === WorkStatus.COMPLETED ? 100 : status === WorkStatus.IN_PROGRESS || status === WorkStatus.PAUSED ? 50 : 0;
   }
@@ -55,6 +74,11 @@ export class ProjectsService {
 
   private derivedStatus(progress: number) {
     return progress === 100 ? WorkStatus.COMPLETED : progress > 0 ? WorkStatus.IN_PROGRESS : WorkStatus.NOT_STARTED;
+  }
+
+  private syncTaskStatus(task: any) {
+    const status = deriveTaskWorkStatus(task.subtasks || [], (subtask) => this.subtaskProgress(subtask));
+    if (status) task.manualStatus = status;
   }
 
   private hasStartedWork(tasks: any[]) {
@@ -82,8 +106,10 @@ export class ProjectsService {
         const progress = this.subtaskProgress({ ...subtask, items });
         return { ...subtask, items, progress, derivedStatus: this.derivedStatus(progress), completedItems: items.filter((item: any) => item.done).length };
       });
-      const progress = this.taskProgress({ ...task, subtasks });
-      return { ...task, subtasks, progress, derivedStatus: this.derivedStatus(progress) };
+      const normalizedTask = { ...task, subtasks };
+      this.syncTaskStatus(normalizedTask);
+      const progress = this.taskProgress(normalizedTask);
+      return { ...normalizedTask, progress, derivedStatus: this.derivedStatus(progress) };
     });
     const progress = tasks.length ? Math.round(tasks.reduce((sum: number, task: any) => sum + task.progress, 0) / tasks.length) : 0;
     const result = { ...raw, tasks, progress, derivedStatus: this.derivedStatus(progress), hasStartedWork: this.hasStartedWork(tasks), totalTasks: tasks.length };
@@ -124,6 +150,31 @@ export class ProjectsService {
     if (user.role !== Role.EMPLOYEE) return;
     const allowed = String(task.assigneeId) === user.id || (task.helperIds || []).some((id: Types.ObjectId) => String(id) === user.id);
     if (!allowed) throw new ForbiddenException("يمكنك تحديث المهام المسندة إليك فقط");
+  }
+
+  private async ensureCanUpdateChecklist(user: AuthUser, task: any, subtask: any) {
+    if (
+      task.manualStatus !== WorkStatus.IN_PROGRESS ||
+      subtask.manualStatus !== WorkStatus.IN_PROGRESS ||
+      !subtask.startedAt
+    ) {
+      throw new BadRequestException("لا يمكن تحديث قائمة التنفيذ إلا بعد بدء التفصيل وتشغيل العداد");
+    }
+    if (user.role !== Role.EMPLOYEE) return;
+    await this.ensureAttendanceStarted(user.id);
+    const issue = employeeChecklistUpdateIssue({
+      taskStatus: task.manualStatus,
+      detailStatus: subtask.manualStatus,
+      employeeId: user.id,
+      startedAt: subtask.startedAt,
+      startedById: subtask.startedById,
+    });
+    if (issue === "NOT_RUNNING") {
+      throw new BadRequestException("لا يمكن تحديث قائمة التنفيذ إلا بعد بدء التفصيل وتشغيل العداد");
+    }
+    if (issue === "NOT_OWNER") {
+      throw new ForbiddenException("يمكن فقط للموظف الذي بدأ هذا التفصيل تحديث قائمة التنفيذ");
+    }
   }
 
   private async validateMembers(company: string, memberIds: string[] = []) {
@@ -229,7 +280,7 @@ export class ProjectsService {
     if (user.role === Role.EMPLOYEE && helperIds.length) throw new ForbiddenException();
     if (helperIds.some((id) => !Types.ObjectId.isValid(id) || !(project.members || []).some((memberId) => String(memberId) === id))) throw new BadRequestException("الفريق المساعد يجب أن يكون ضمن فريق المشروع");
     (project.tasks as any[]).push({
-      title: dto.title.trim(), description: dto.description?.trim() || "", assigneeId: new Types.ObjectId(dto.assigneeId),
+      title: dto.title.trim(), description: dto.description?.trim() || "", createdById: new Types.ObjectId(user.id), assigneeId: new Types.ObjectId(dto.assigneeId),
       helperIds: helperIds.map((id) => new Types.ObjectId(id)), priority: dto.priority || TaskPriority.NORMAL,
       dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, order: project.tasks.length,
       subtasks: (dto.subtaskTitles || []).filter((title) => title.trim()).map((title, order) => ({ title: title.trim(), order, items: [] }))
@@ -302,7 +353,14 @@ export class ProjectsService {
   async receiveTask(taskId: string, dto: { projectId: string }, user: AuthUser) {
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, taskId);
-    this.ensureWorker(user, task);
+    const issue = taskReceiptIssue({
+      employeeId: user.id,
+      creatorId: task.createdById,
+      assigneeId: task.assigneeId,
+      helperIds: task.helperIds || [],
+    });
+    if (issue === "NOT_ASSIGNED") throw new ForbiddenException("يمكن استلام المهام المسندة إليك فقط");
+    if (issue === "SELF_CREATED") throw new BadRequestException("لا تحتاج المهمة التي أنشأتها بنفسك إلى تسجيل استلام");
     const receivedByIds = (task.receivedByIds || []) as Types.ObjectId[];
     if (!receivedByIds.some((id) => String(id) === user.id)) {
       receivedByIds.push(new Types.ObjectId(user.id));
@@ -312,11 +370,13 @@ export class ProjectsService {
     return this.workspace(dto.projectId, user);
   }
 
-  private pauseTimedWork(node: any) {
+  private pauseTimedWork(node: any, reason: WorkPauseReason = WorkPauseReason.SWITCHED_TASK) {
     if (node.startedAt) {
       node.elapsedSeconds = (node.elapsedSeconds || 0) + Math.max(0, Math.floor((Date.now() - new Date(node.startedAt).getTime()) / 1000));
     }
     node.manualStatus = WorkStatus.PAUSED;
+    node.pausedAt = new Date();
+    node.pauseReason = reason;
     node.startedAt = null;
     node.startedById = null;
   }
@@ -335,6 +395,7 @@ export class ProjectsService {
     const pauseInProject = (currentProject: any) => {
       let changed = false;
       for (const currentTask of currentProject.tasks as any[]) {
+        let taskChanged = false;
         for (const currentDetail of currentTask.subtasks as any[]) {
           const detailOwner = String(currentDetail.startedById || currentTask.assigneeId);
           if (
@@ -344,8 +405,10 @@ export class ProjectsService {
           ) {
             this.pauseTimedWork(currentDetail);
             changed = true;
+            taskChanged = true;
           }
         }
+        if (taskChanged) this.syncTaskStatus(currentTask);
       }
       return changed;
     };
@@ -377,6 +440,7 @@ export class ProjectsService {
     if (dto.manualStatus !== undefined) {
       if (dto.manualStatus === WorkStatus.IN_PROGRESS) {
         const employeeId = user.role === Role.EMPLOYEE ? user.id : String(task.assigneeId);
+        await this.ensureAttendanceStarted(employeeId);
         if (this.subtaskProgress(subtask) >= 100) throw new BadRequestException("لا يمكن بدء تفصيل مكتمل");
         if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
           if (String(subtask.startedById || task.assigneeId) === employeeId) return this.workspace(dto.projectId, user);
@@ -386,6 +450,9 @@ export class ProjectsService {
         if (!subtask.firstStartedAt) subtask.firstStartedAt = new Date();
         subtask.startedAt = new Date();
         subtask.startedById = new Types.ObjectId(employeeId);
+        subtask.lastWorkedById = new Types.ObjectId(employeeId);
+        subtask.pausedAt = null;
+        subtask.pauseReason = null;
       } else if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
         if (
           user.role === Role.EMPLOYEE &&
@@ -398,11 +465,16 @@ export class ProjectsService {
         }
         subtask.startedAt = null;
         subtask.startedById = null;
+        subtask.pausedAt = new Date();
+        subtask.pauseReason = WorkPauseReason.MANUAL;
       }
       if (dto.manualStatus === WorkStatus.COMPLETED) {
         for (const item of subtask.items || []) item.done = true;
+        subtask.pausedAt = null;
+        subtask.pauseReason = null;
       }
       subtask.manualStatus = dto.manualStatus;
+      this.syncTaskStatus(task);
     }
     await project.save();
     return this.workspace(dto.projectId, user);
@@ -436,6 +508,8 @@ export class ProjectsService {
     if (dto.text !== undefined) item.text = dto.text.trim();
     if (dto.durationDays !== undefined) item.durationDays = dto.durationDays;
     if (dto.done !== undefined) {
+      this.syncTaskStatus(task);
+      await this.ensureCanUpdateChecklist(user, task, subtask);
       item.done = dto.done;
       const allItemsCompleted =
         subtask.items.length > 0 &&
@@ -454,9 +528,12 @@ export class ProjectsService {
         subtask.manualStatus = WorkStatus.COMPLETED;
         subtask.startedAt = null;
         subtask.startedById = null;
+        subtask.pausedAt = null;
+        subtask.pauseReason = null;
       } else if (subtask.manualStatus === WorkStatus.COMPLETED) {
         subtask.manualStatus = WorkStatus.NOT_STARTED;
       }
+      this.syncTaskStatus(task);
     }
     await project.save();
     return this.workspace(dto.projectId, user);
