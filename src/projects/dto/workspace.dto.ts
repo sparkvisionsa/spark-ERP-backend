@@ -28,15 +28,19 @@ export class UpdateTaskDto {
 export class ProjectReferenceDto { @IsString() @IsNotEmpty() projectId: string; }
 
 export class CreateSubtaskDto extends ProjectReferenceDto {
+  @IsOptional() @IsString() details?: string;
   @IsString() @IsNotEmpty({ message: "عنوان المهمة الفرعية مطلوب" }) title: string;
   @IsOptional() @IsArray() @IsString({ each: true }) itemTexts?: string[];
   @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
+  @IsOptional() @IsInt() @Min(1) durationMinutes?: number | null;
 }
 
 export class UpdateSubtaskDto extends ProjectReferenceDto {
+  @IsOptional() @IsString() details?: string;
   @IsOptional() @IsString() @IsNotEmpty() title?: string;
   @IsOptional() @IsEnum(WorkStatus) manualStatus?: WorkStatus;
   @IsOptional() @IsInt() @Min(1) durationDays?: number | null;
+  @IsOptional() @IsInt() @Min(1) durationMinutes?: number | null;
 }
 
 export class CreateItemDto extends ProjectReferenceDto {
@@ -59,6 +63,7 @@ export class ReorderNodeDto extends ProjectReferenceDto {
 
 export class CreateDeliveryDto extends ProjectReferenceDto {
   @IsString() @IsNotEmpty() taskId: string;
+  @IsOptional() @IsString() subtaskId?: string;
   @IsOptional() @IsString() itemId?: string;
   @IsOptional() @IsString() text?: string;
   @IsOptional() @IsUrl({ protocols: ["https"], require_protocol: true }, { message: "رابط التسليم يجب أن يبدأ بـ https://" }) link?: string;

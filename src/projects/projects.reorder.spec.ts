@@ -1,10 +1,15 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
-import { reorderNodes } from "./reorder-nodes";
+import { firstOrderForNewNode, reorderNodes } from "./reorder-nodes";
 
 const orderedIds = (nodes: Array<{ _id: string; order: number }>) =>
   [...nodes].sort((a, b) => a.order - b.order).map((node) => node._id);
 
 describe("reorderNodes", () => {
+  it("places a newly created node before every existing node", () => {
+    expect(firstOrderForNewNode([])).toBe(0);
+    expect(firstOrderForNewNode([{ order: 7 }, { order: -2 }, { order: 3 }])).toBe(-3);
+  });
+
   it("moves a stage before the drop target and normalizes every order", () => {
     const nodes = [
       { _id: "first", order: 0 },

@@ -21,7 +21,9 @@ export const ChecklistItemSchema = SchemaFactory.createForClass(ChecklistItem);
 @Schema({ _id: true, versionKey: false })
 export class ProjectSubtask {
   @Prop({ required: true, trim: true }) title: string;
+  @Prop({ trim: true, default: "" }) details: string;
   @Prop({ type: Number, default: null, min: 1 }) durationDays?: number | null;
+  @Prop({ type: Number, default: null, min: 1 }) durationMinutes?: number | null;
   @Prop({ enum: WorkStatus, default: WorkStatus.NOT_STARTED }) manualStatus: WorkStatus;
   @Prop({ type: Date, default: null }) firstStartedAt?: Date | null;
   @Prop({ type: Date, default: null }) startedAt?: Date | null;

@@ -1,5 +1,15 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 
+export function firstOrderForNewNode(nodes: Array<{ order?: number | null }>) {
+  if (!nodes.length) return 0;
+  const firstOrder = Math.min(
+    ...nodes.map((node) =>
+      Number.isFinite(Number(node.order)) ? Number(node.order) : 0,
+    ),
+  );
+  return firstOrder - 1;
+}
+
 export function reorderNodes(
   nodes: any[],
   id: string,

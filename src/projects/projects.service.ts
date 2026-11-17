@@ -10,7 +10,7 @@ import { AssignProjectMembersDto, CreateProjectDto, UpdateProjectDto } from "./d
 import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, ReorderNodeDto, UpdateItemDto, UpdateSubtaskDto, UpdateTaskDto } from "./dto/workspace.dto";
 import { Project, ProjectDocument, ProjectStatus, TaskPriority, WorkPauseReason, WorkStatus } from "./schemas/project.schema";
 import { DeliveryFilesService, DeliveryUpload } from "./delivery-files.service";
-import { reorderNodes } from "./reorder-nodes";
+import { firstOrderForNewNode, reorderNodes } from "./reorder-nodes";
 import { deriveTaskWorkStatus, employeeChecklistUpdateIssue, taskReceiptIssue } from "./checklist-rules";
 import { AttendanceStatus, HrRecord, HrRecordDocument } from "../hr/schemas/hr-record.schema";
 
@@ -63,8 +63,8 @@ export class ProjectsService {
   }
 
   private subtaskProgress(subtask: any) {
-    if (!subtask.items?.length) return this.statusProgress(subtask.manualStatus);
-    return Math.round((subtask.items.filter((item: any) => item.done).length / subtask.items.length) * 100);
+    // Details are descriptive text, so the execution entry itself owns progress.
+    return this.statusProgress(subtask.manualStatus);
   }
 
   private taskProgress(task: any) {
@@ -104,7 +104,8 @@ export class ProjectsService {
       const subtasks = [...(task.subtasks || [])].sort((a: any, b: any) => a.order - b.order).map((subtask: any) => {
         const items = [...(subtask.items || [])].sort((a: any, b: any) => a.order - b.order);
         const progress = this.subtaskProgress({ ...subtask, items });
-        return { ...subtask, items, progress, derivedStatus: this.derivedStatus(progress), completedItems: items.filter((item: any) => item.done).length };
+        const details = subtask.details?.trim() || items.map((item: any) => item.text).filter(Boolean).join("\n");
+        return { ...subtask, details, items, progress, derivedStatus: this.derivedStatus(progress), completedItems: 0 };
       });
       const normalizedTask = { ...task, subtasks };
       this.syncTaskStatus(normalizedTask);
@@ -207,8 +208,10 @@ export class ProjectsService {
     const members = user.role === Role.EMPLOYEE
       ? await this.validateMembers(dto.company, [user.id])
       : await this.validateMembers(dto.company, dto.memberIds);
-    const last = await this.projectModel.findOne({ deletedAt: null, status: { $ne: ProjectStatus.ARCHIVED } }).sort({ order: -1 }).select("order").lean();
-    return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, budget: dto.budget, members, createdById: new Types.ObjectId(user.id), order: (last?.order ?? -1) + 1 });
+    const orderFilter = this.scope(user);
+    orderFilter.status = { $ne: ProjectStatus.ARCHIVED };
+    const first = await this.projectModel.findOne(orderFilter).sort({ order: 1, createdAt: -1 }).select("order").lean();
+    return this.projectModel.create({ name: dto.name, company: dto.company, client: dto.client, description: dto.description, startDate: dto.startDate ? new Date(dto.startDate) : null, dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, budget: dto.budget, members, createdById: new Types.ObjectId(user.id), order: firstOrderForNewNode(first ? [first] : []) });
   }
 
   async moveProject(id: string, direction: "up" | "down" | undefined, targetId: string | undefined, user: AuthUser) {
@@ -282,7 +285,7 @@ export class ProjectsService {
     (project.tasks as any[]).push({
       title: dto.title.trim(), description: dto.description?.trim() || "", createdById: new Types.ObjectId(user.id), assigneeId: new Types.ObjectId(dto.assigneeId),
       helperIds: helperIds.map((id) => new Types.ObjectId(id)), priority: dto.priority || TaskPriority.NORMAL,
-      dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, order: project.tasks.length,
+      dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, order: firstOrderForNewNode(project.tasks as any[]),
       subtasks: (dto.subtaskTitles || []).filter((title) => title.trim()).map((title, order) => ({ title: title.trim(), order, items: [] }))
     });
     await project.save();
@@ -423,7 +426,14 @@ export class ProjectsService {
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, taskId);
     this.ensureWorker(user, task);
-    task.subtasks.push({ title: dto.title.trim(), durationDays: dto.durationDays ?? null, order: task.subtasks.length, items: (dto.itemTexts || []).filter((text) => text.trim()).map((text, order) => ({ text: text.trim(), order })) });
+    task.subtasks.push({
+      title: dto.title.trim(),
+      details: dto.details?.trim() || (dto.itemTexts || []).filter((text) => text.trim()).join("\n"),
+      durationDays: dto.durationDays ?? null,
+      durationMinutes: dto.durationMinutes ?? (dto.durationDays ? dto.durationDays * 1440 : null),
+      order: firstOrderForNewNode(task.subtasks),
+      items: [],
+    });
     await project.save();
     return this.workspace(dto.projectId, user);
   }
@@ -436,7 +446,14 @@ export class ProjectsService {
       if (dto.title !== undefined) throw new ForbiddenException("لا يمكنك تعديل اسم المرحلة");
     } else this.ensureManager(user);
     if (dto.title !== undefined) subtask.title = dto.title.trim();
+    if (dto.details !== undefined) subtask.details = dto.details.trim();
     if (dto.durationDays !== undefined) subtask.durationDays = dto.durationDays;
+    if (dto.durationMinutes !== undefined) {
+      subtask.durationMinutes = dto.durationMinutes;
+      // New clients use minute precision. Clear the legacy field so there is
+      // only one authoritative value after an edit.
+      subtask.durationDays = null;
+    }
     if (dto.manualStatus !== undefined) {
       if (dto.manualStatus === WorkStatus.IN_PROGRESS) {
         const employeeId = user.role === Role.EMPLOYEE ? user.id : String(task.assigneeId);
@@ -557,28 +574,28 @@ export class ProjectsService {
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, dto.taskId);
     this.ensureWorker(user, task);
-    let deliveryItem: any;
+    let deliveryItem: any = null;
     let deliverySubtask: any;
     if (dto.itemId) {
       const target = this.getItem(project, dto.itemId);
       if (String(target.task._id) !== dto.taskId) throw new BadRequestException("بند التنفيذ لا يتبع المهمة المحددة");
       deliveryItem = target.item;
       deliverySubtask = target.subtask;
+    } else if (dto.subtaskId) {
+      const target = this.getSubtask(project, dto.subtaskId);
+      if (String(target.task._id) !== dto.taskId) throw new BadRequestException("بند قائمة التنفيذ لا يتبع المهمة المحددة");
+      deliverySubtask = target.subtask;
     } else {
-      deliverySubtask = task.subtasks?.[0];
-      if (!deliverySubtask) {
-        task.subtasks.push({ title: "قائمة تنفيذ تلقائية", order: task.subtasks.length, items: [] });
-        deliverySubtask = task.subtasks[task.subtasks.length - 1];
-      }
-      const automaticCount = task.subtasks.reduce((total: number, subtask: any) => total + (subtask.items || []).filter((item: any) => item.text.startsWith("بند تنفيذ تلقائي")).length, 0);
-      deliverySubtask.items.push({ text: `بند تنفيذ تلقائي ${automaticCount + 1}`, done: false, attachments: 0, order: deliverySubtask.items.length });
-      deliveryItem = deliverySubtask.items[deliverySubtask.items.length - 1];
+      throw new BadRequestException("اختر بندًا من قائمة التنفيذ قبل إضافة التسليم");
     }
+    // The same server-side rule protects checklist changes and deliveries:
+    // the selected execution entry must be actively running with its timer.
+    await this.ensureCanUpdateChecklist(user, task, deliverySubtask);
     const attachments = await this.deliveryFiles.storeMany(uploads, user.id);
     try {
       const firstKind = attachments[0]?.kind;
-      (project.deliveries as any[]).push({ authorId: new Types.ObjectId(user.id), taskId: dto.taskId, subtaskId: String(deliverySubtask._id), itemId: String(deliveryItem._id), text: dto.text?.trim() || "", link: dto.link?.trim() || "", attachmentName: dto.attachmentName?.trim() || attachments[0]?.name || "", attachmentType: dto.attachmentType || (dto.link ? "link" : firstKind === "image" || firstKind === "video" ? firstKind : attachments.length ? "file" : ""), attachments });
-      deliveryItem.attachments = (deliveryItem.attachments || 0) + 1;
+      (project.deliveries as any[]).push({ authorId: new Types.ObjectId(user.id), taskId: dto.taskId, subtaskId: String(deliverySubtask._id), itemId: deliveryItem ? String(deliveryItem._id) : null, text: dto.text?.trim() || "", link: dto.link?.trim() || "", attachmentName: dto.attachmentName?.trim() || attachments[0]?.name || "", attachmentType: dto.attachmentType || (dto.link ? "link" : firstKind === "image" || firstKind === "video" ? firstKind : attachments.length ? "file" : ""), attachments });
+      if (deliveryItem) deliveryItem.attachments = (deliveryItem.attachments || 0) + 1;
       await project.save();
     } catch (error) {
       await this.deliveryFiles.removeMany(attachments.map((attachment) => attachment.storageId));
