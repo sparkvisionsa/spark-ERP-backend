@@ -9,9 +9,10 @@ import { DeliveriesController, ItemsController, SubtasksController, TasksControl
 import { DeliveryFilesService } from "./delivery-files.service";
 import { Company, CompanySchema } from "../companies/schemas/company.schema";
 import { HrRecord, HrRecordSchema } from "../hr/schemas/hr-record.schema";
+import { NotificationsModule } from "../notifications/notifications.module";
 
 @Module({
-  imports: [AuthModule, MongooseModule.forFeature([{ name: Project.name, schema: ProjectSchema }, { name: Employee.name, schema: EmployeeSchema }, { name: Company.name, schema: CompanySchema }, { name: HrRecord.name, schema: HrRecordSchema }])],
+  imports: [AuthModule, NotificationsModule, MongooseModule.forFeature([{ name: Project.name, schema: ProjectSchema }, { name: Employee.name, schema: EmployeeSchema }, { name: Company.name, schema: CompanySchema }, { name: HrRecord.name, schema: HrRecordSchema }])],
   controllers: [ProjectsController, WorkspaceController, TasksController, SubtasksController, ItemsController, DeliveriesController],
   providers: [ProjectsService, DeliveryFilesService]
 })

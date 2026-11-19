@@ -11,15 +11,87 @@ import { CreateDeliveryDto, CreateItemDto, CreateSubtaskDto, CreateTaskDto, Reor
 import { Project, ProjectDocument, ProjectStatus, TaskPriority, WorkPauseReason, WorkStatus } from "./schemas/project.schema";
 import { DeliveryFilesService, DeliveryUpload } from "./delivery-files.service";
 import { firstOrderForNewNode, reorderNodes } from "./reorder-nodes";
-import { deriveTaskWorkStatus, employeeChecklistUpdateIssue, taskReceiptIssue } from "./checklist-rules";
+import { bypassesChecklistSessionRestrictions, deriveTaskWorkStatus, employeeChecklistUpdateIssue, taskReceiptIssue } from "./checklist-rules";
 import { AttendanceStatus, HrRecord, HrRecordDocument } from "../hr/schemas/hr-record.schema";
+import { NotificationsService } from "../notifications/notifications.service";
+import { NotificationType } from "../notifications/schemas/notification.schema";
+import { deliveryReplyCandidates, deliveryReplyExcerpt } from "./delivery-reply";
 
 @Injectable()
 export class ProjectsService {
-  constructor(@InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>, @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>, @InjectModel(HrRecord.name) private readonly hrModel: Model<HrRecordDocument>, private readonly deliveryFiles: DeliveryFilesService) {}
+  constructor(@InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>, @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>, @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>, @InjectModel(HrRecord.name) private readonly hrModel: Model<HrRecordDocument>, private readonly deliveryFiles: DeliveryFilesService, private readonly notifications: NotificationsService) {}
 
   private deliveryFileIds(deliveries: any[]) {
     return deliveries.flatMap((delivery) => (delivery.attachments || []).map((attachment: any) => String(attachment.storageId || ""))).filter(Boolean);
+  }
+
+  private async notifyTaskAssignments(project: ProjectDocument, task: any, recipientIds: string[], actor: AuthUser) {
+    const assignedAt = Date.now();
+    await Promise.all(recipientIds.map((recipientId) =>
+      this.notifications.notifyUsers([recipientId], {
+        type: NotificationType.TASK_ASSIGNED,
+        title: "مهمة جديدة بانتظار الاستلام",
+        message: `عيّنك ${actor.fullName} على المهمة «${task.title}» ضمن مشروع «${project.name}»`,
+        href: `/projects?p=${project._id}&e=${recipientId}&t=${task._id}`,
+        actorId: actor.id,
+        projectId: String(project._id),
+        taskId: String(task._id),
+        eventKey: `task-assigned:${task._id}:${recipientId}:${assignedAt}`,
+      }, actor.id),
+    ));
+  }
+
+  /** Tells the task's assignee and helpers (except the actor) that new checklist work was added. */
+  private async notifyChecklistItemAdded(project: ProjectDocument, task: any, subtask: any, itemTitle: string, actor: AuthUser, itemId?: string) {
+    const recipientIds = [
+      String(task.assigneeId),
+      ...(task.helperIds || []).map((id: Types.ObjectId) => String(id)),
+    ].filter((id) => id && id !== actor.id);
+    if (!recipientIds.length) return;
+    await Promise.all([...new Set(recipientIds)].map((recipientId) =>
+      this.notifications.notifyUsers([recipientId], {
+        type: NotificationType.CHECKLIST_ITEM_ADDED,
+        title: "بند تنفيذ جديد في مهمتك",
+        message: `أضاف ${actor.fullName} البند «${itemTitle}» إلى قائمة تنفيذ المهمة «${task.title}» ضمن مشروع «${project.name}»`,
+        href: `/projects?p=${project._id}&e=${recipientId}&t=${task._id}&s=${subtask._id}${itemId ? `&i=${itemId}` : ""}`,
+        actorId: actor.id,
+        projectId: String(project._id),
+        taskId: String(task._id),
+        subtaskId: String(subtask._id),
+        eventKey: `checklist-added:${itemId || subtask._id}:${recipientId}`,
+      }, actor.id),
+    ));
+  }
+
+  /**
+   * A delivery added to a checklist item's thread is a reply for everyone already
+   * involved in it: the task's assignee and helpers plus anyone who posted earlier
+   * deliveries on the same item. System administrators are skipped here because they
+   * already receive the DELIVERY_CREATED alert for every delivery.
+   */
+  private async notifyDeliveryReply(project: ProjectDocument, task: any, subtask: any, item: any, delivery: any, actor: AuthUser) {
+    const candidateIds = deliveryReplyCandidates(task, project.deliveries as any[], String(subtask._id), String(delivery._id), actor.id)
+      .filter((id) => Types.ObjectId.isValid(id));
+    if (!candidateIds.length) return;
+    const admins = await this.employeeModel
+      .find({ _id: { $in: candidateIds.map((id) => new Types.ObjectId(id)) }, role: Role.SUPER_ADMIN })
+      .select("_id")
+      .lean();
+    const adminIds = new Set(admins.map((admin) => String(admin._id)));
+    const recipientIds = candidateIds.filter((id) => !adminIds.has(id));
+    if (!recipientIds.length) return;
+    const shortExcerpt = deliveryReplyExcerpt(delivery.text);
+    await this.notifications.notifyUsers(recipientIds, {
+      type: NotificationType.DELIVERY_REPLY,
+      title: "رد جديد في التسليمات",
+      message: `ردّ ${actor.fullName} في تسليمات المهمة «${task.title}» ضمن مشروع «${project.name}»${shortExcerpt ? `\n«${shortExcerpt}»` : ""}`,
+      href: `/projects?p=${project._id}&e=${task.assigneeId}&t=${task._id}&s=${subtask._id}${item ? `&i=${item._id}` : ""}`,
+      actorId: actor.id,
+      projectId: String(project._id),
+      taskId: String(task._id),
+      subtaskId: String(subtask._id),
+      eventKey: `delivery-reply:${delivery._id}`,
+    }, actor.id);
   }
 
   private scope(user: AuthUser): FilterQuery<ProjectDocument> {
@@ -154,6 +226,7 @@ export class ProjectsService {
   }
 
   private async ensureCanUpdateChecklist(user: AuthUser, task: any, subtask: any) {
+    if (bypassesChecklistSessionRestrictions(user.role)) return;
     if (
       task.manualStatus !== WorkStatus.IN_PROGRESS ||
       subtask.manualStatus !== WorkStatus.IN_PROGRESS ||
@@ -288,7 +361,9 @@ export class ProjectsService {
       dueDate: dto.dueDate ? new Date(dto.dueDate) : null, durationDays: dto.durationDays ?? null, order: firstOrderForNewNode(project.tasks as any[]),
       subtasks: (dto.subtaskTitles || []).filter((title) => title.trim()).map((title, order) => ({ title: title.trim(), order, items: [] }))
     });
+    const createdTask = (project.tasks as any[])[project.tasks.length - 1];
     await project.save();
+    await this.notifyTaskAssignments(project, createdTask, [dto.assigneeId, ...helperIds], user).catch(() => undefined);
     return this.workspace(dto.projectId, user);
   }
 
@@ -323,6 +398,10 @@ export class ProjectsService {
     this.ensureManager(user);
     const project = await this.findProject(dto.projectId, user);
     const task = this.getTask(project, taskId);
+    const previousRecipientIds = new Set([
+      String(task.assigneeId),
+      ...(task.helperIds || []).map((id: Types.ObjectId) => String(id)),
+    ]);
     if (dto.assigneeId) {
       if (!Types.ObjectId.isValid(dto.assigneeId) || !project.members.some((id) => String(id) === dto.assigneeId)) throw new BadRequestException("الموظف المسؤول يجب أن يكون ضمن فريق المشروع");
       task.assigneeId = new Types.ObjectId(dto.assigneeId);
@@ -337,7 +416,18 @@ export class ProjectsService {
     if (dto.dueDate !== undefined) task.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
     if (dto.durationDays !== undefined) task.durationDays = dto.durationDays;
     if (dto.manualStatus !== undefined) task.manualStatus = dto.manualStatus;
+    const currentRecipientIds = [
+      String(task.assigneeId),
+      ...(task.helperIds || []).map((id: Types.ObjectId) => String(id)),
+    ];
+    const newlyAssignedIds = [...new Set(currentRecipientIds)].filter((id) => !previousRecipientIds.has(id));
+    if (newlyAssignedIds.length) {
+      task.receivedByIds = (task.receivedByIds || []).filter(
+        (id: Types.ObjectId) => !newlyAssignedIds.includes(String(id)),
+      );
+    }
     await project.save();
+    await this.notifyTaskAssignments(project, task, newlyAssignedIds, user).catch(() => undefined);
     return this.workspace(dto.projectId, user);
   }
 
@@ -370,6 +460,7 @@ export class ProjectsService {
       task.receivedByIds = receivedByIds;
       await project.save();
     }
+    await this.notifications.markTaskNotificationsRead(user.id, taskId).catch(() => undefined);
     return this.workspace(dto.projectId, user);
   }
 
@@ -434,7 +525,9 @@ export class ProjectsService {
       order: firstOrderForNewNode(task.subtasks),
       items: [],
     });
+    const createdSubtask = task.subtasks[task.subtasks.length - 1];
     await project.save();
+    await this.notifyChecklistItemAdded(project, task, createdSubtask, createdSubtask.title, user).catch(() => undefined);
     return this.workspace(dto.projectId, user);
   }
 
@@ -455,9 +548,12 @@ export class ProjectsService {
       subtask.durationDays = null;
     }
     if (dto.manualStatus !== undefined) {
+      const reopeningCompleted = subtask.manualStatus === WorkStatus.COMPLETED && dto.manualStatus !== WorkStatus.COMPLETED;
       if (dto.manualStatus === WorkStatus.IN_PROGRESS) {
         const employeeId = user.role === Role.EMPLOYEE ? user.id : String(task.assigneeId);
-        await this.ensureAttendanceStarted(employeeId);
+        if (!bypassesChecklistSessionRestrictions(user.role)) {
+          await this.ensureAttendanceStarted(employeeId);
+        }
         if (this.subtaskProgress(subtask) >= 100) throw new BadRequestException("لا يمكن بدء تفصيل مكتمل");
         if (subtask.manualStatus === WorkStatus.IN_PROGRESS) {
           if (String(subtask.startedById || task.assigneeId) === employeeId) return this.workspace(dto.projectId, user);
@@ -489,6 +585,11 @@ export class ProjectsService {
         for (const item of subtask.items || []) item.done = true;
         subtask.pausedAt = null;
         subtask.pauseReason = null;
+      } else if (reopeningCompleted) {
+        subtask.startedAt = null;
+        subtask.startedById = null;
+        subtask.pausedAt = dto.manualStatus === WorkStatus.PAUSED ? new Date() : null;
+        subtask.pauseReason = dto.manualStatus === WorkStatus.PAUSED ? WorkPauseReason.MANUAL : null;
       }
       subtask.manualStatus = dto.manualStatus;
       this.syncTaskStatus(task);
@@ -514,7 +615,9 @@ export class ProjectsService {
     const { task, subtask } = this.getSubtask(project, subtaskId);
     if (user.role === Role.EMPLOYEE) this.ensureWorker(user, task); else this.ensureManager(user);
     subtask.items.push({ text: dto.text.trim(), durationDays: dto.durationDays ?? null, done: false, attachments: 0, order: subtask.items.length });
+    const createdItem = subtask.items[subtask.items.length - 1];
     await project.save();
+    await this.notifyChecklistItemAdded(project, task, subtask, createdItem.text, user, String(createdItem._id)).catch(() => undefined);
     return this.workspace(dto.projectId, user);
   }
 
@@ -595,8 +698,21 @@ export class ProjectsService {
     try {
       const firstKind = attachments[0]?.kind;
       (project.deliveries as any[]).push({ authorId: new Types.ObjectId(user.id), taskId: dto.taskId, subtaskId: String(deliverySubtask._id), itemId: deliveryItem ? String(deliveryItem._id) : null, text: dto.text?.trim() || "", link: dto.link?.trim() || "", attachmentName: dto.attachmentName?.trim() || attachments[0]?.name || "", attachmentType: dto.attachmentType || (dto.link ? "link" : firstKind === "image" || firstKind === "video" ? firstKind : attachments.length ? "file" : ""), attachments });
+      const createdDelivery = (project.deliveries as any[])[project.deliveries.length - 1];
       if (deliveryItem) deliveryItem.attachments = (deliveryItem.attachments || 0) + 1;
       await project.save();
+      await this.notifyDeliveryReply(project, task, deliverySubtask, deliveryItem, createdDelivery, user).catch(() => undefined);
+      await this.notifications.notifyRole(Role.SUPER_ADMIN, {
+        type: NotificationType.DELIVERY_CREATED,
+        title: "تسليم جديد",
+        message: `أضاف ${user.fullName} تسليمًا جديدًا للمهمة «${task.title}» ضمن مشروع «${project.name}»`,
+        href: `/projects?p=${project._id}&e=${user.id}&t=${task._id}&s=${deliverySubtask._id}${deliveryItem ? `&i=${deliveryItem._id}` : ""}`,
+        actorId: user.id,
+        projectId: String(project._id),
+        taskId: String(task._id),
+        subtaskId: String(deliverySubtask._id),
+        eventKey: `delivery-created:${createdDelivery._id}`,
+      }, user.id).catch(() => undefined);
     } catch (error) {
       await this.deliveryFiles.removeMany(attachments.map((attachment) => attachment.storageId));
       throw error;

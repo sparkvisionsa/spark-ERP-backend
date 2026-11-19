@@ -1,7 +1,13 @@
-import { deriveTaskWorkStatus, employeeChecklistUpdateIssue, taskReceiptIssue } from "./checklist-rules";
+import { bypassesChecklistSessionRestrictions, deriveTaskWorkStatus, employeeChecklistUpdateIssue, taskReceiptIssue } from "./checklist-rules";
 
 describe("ProjectsService checklist rules", () => {
   const employeeId = "employee-1";
+
+  it("bypasses attendance and active-session restrictions only for the system administrator", () => {
+    expect(bypassesChecklistSessionRestrictions("SUPER_ADMIN")).toBe(true);
+    expect(bypassesChecklistSessionRestrictions("SUPERVISOR")).toBe(false);
+    expect(bypassesChecklistSessionRestrictions("EMPLOYEE")).toBe(false);
+  });
 
   function nodes(
     taskStatus = "IN_PROGRESS",

@@ -8,6 +8,8 @@ import { Project, ProjectDocument, ProjectStatus, WorkPauseReason, WorkStatus } 
 import { Company, CompanyDocument } from "../companies/schemas/company.schema";
 import { CreateAttendanceDto, CreateEmployeeDocumentDto, CreateLeaveDto, UpdateLeaveStatusDto } from "./dto/hr.dto";
 import { AttendanceCheckInStatus, AttendanceCheckOutStatus, AttendanceStatus, AttendanceWorkReference, HrRecord, HrRecordDocument } from "./schemas/hr-record.schema";
+import { NotificationsService } from "../notifications/notifications.service";
+import { NotificationType } from "../notifications/schemas/notification.schema";
 
 type WorkCandidate = {
   project: ProjectDocument;
@@ -28,6 +30,7 @@ export class HrService {
     @InjectModel(Employee.name) private readonly employeeModel: Model<EmployeeDocument>,
     @InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>,
     @InjectModel(Company.name) private readonly companyModel: Model<CompanyDocument>,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async ensureAccess(employeeId: string, user: AuthUser) {
@@ -361,6 +364,14 @@ export class HrService {
       await record.save();
     }
     const active = resumedWork || await this.activeWork(user.id);
+    await this.notifications.notifyRole(Role.SUPER_ADMIN, {
+      type: NotificationType.ATTENDANCE_CHECK_IN,
+      title: "بدء دوام",
+      message: `بدأ ${user.fullName} الدوام الساعة ${this.riyadhTime(now)}`,
+      href: "/employees",
+      actorId: user.id,
+      eventKey: `attendance-check-in:${user.id}:${dateKey}`,
+    }, user.id).catch(() => undefined);
     return { ...this.statusPayload(record, new Date(), active), action: "CHECKED_IN", resumedWork };
   }
 
@@ -384,6 +395,14 @@ export class HrService {
     shift.status = AttendanceStatus.COMPLETED;
     shift.pausedWork = pausedWork;
     await record.save();
+    await this.notifications.notifyRole(Role.SUPER_ADMIN, {
+      type: NotificationType.ATTENDANCE_CHECK_OUT,
+      title: "إنهاء دوام",
+      message: `أنهى ${user.fullName} الدوام الساعة ${this.riyadhTime(now)}`,
+      href: "/employees",
+      actorId: user.id,
+      eventKey: `attendance-check-out:${user.id}:${shift.dateKey || this.riyadhDateKey(now)}`,
+    }, user.id).catch(() => undefined);
     return { ...this.statusPayload(record, new Date()), action: "CHECKED_OUT", pausedWork };
   }
 

@@ -11,6 +11,7 @@ import { SettingsModule } from "./settings/settings.module";
 import { HrModule } from "./hr/hr.module";
 import { CompaniesModule } from "./companies/companies.module";
 import { TranslationModule } from "./translation/translation.module";
+import { NotificationsModule } from "./notifications/notifications.module";
 
 @Module({
   imports: [
@@ -22,9 +23,10 @@ import { TranslationModule } from "./translation/translation.module";
     ProjectsModule,
     AnalyticsModule,
     SettingsModule,
-    HrModule
-    , CompaniesModule,
-    TranslationModule
+    HrModule,
+    CompaniesModule,
+    TranslationModule,
+    NotificationsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard }

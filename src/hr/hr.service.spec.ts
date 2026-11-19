@@ -5,7 +5,8 @@ import { HrService } from "./hr.service";
 import { WorkPauseReason, WorkStatus } from "../projects/schemas/project.schema";
 
 describe("HrService validation", () => {
-  const service = new HrService({} as never, {} as never, {} as never, {} as never);
+  const notifications = { notifyRole: async () => undefined };
+  const service = new HrService({} as never, {} as never, {} as never, {} as never, notifications as never);
 
   it("rejects a leave ending before its start", async () => {
     await expect(service.addLeave("507f1f77bcf86cd799439011", { type: "سنوية", startDate: "2026-10-10", endDate: "2026-10-09" })).rejects.toBeInstanceOf(BadRequestException);
@@ -128,7 +129,7 @@ describe("HrService validation", () => {
       save: async () => { saveCalls += 1; },
     };
     const projectModel = { find: async () => [project] };
-    const attendance = new HrService({} as never, {} as never, projectModel as never, {} as never);
+    const attendance = new HrService({} as never, {} as never, projectModel as never, {} as never, notifications as never);
 
     const paused = await (attendance as any).pauseActiveWork(employeeId);
 
@@ -157,7 +158,7 @@ describe("HrService validation", () => {
     };
     let findCalls = 0;
     const projectModel = { find: async () => findCalls++ === 0 ? [] : [project] };
-    const attendance = new HrService({} as never, {} as never, projectModel as never, {} as never);
+    const attendance = new HrService({} as never, {} as never, projectModel as never, {} as never, notifications as never);
     const record = { attendance: [] };
 
     const resumed = await (attendance as any).resumePausedWork(employeeId, record);

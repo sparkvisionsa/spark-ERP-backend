@@ -2,6 +2,10 @@ export type ChecklistWorkStatus = "NOT_STARTED" | "IN_PROGRESS" | "PAUSED" | "CO
 
 export type ChecklistUpdateIssue = "NOT_RUNNING" | "NOT_OWNER" | null;
 
+export function bypassesChecklistSessionRestrictions(role: string) {
+  return role === "SUPER_ADMIN";
+}
+
 export function employeeChecklistUpdateIssue(input: {
   taskStatus: ChecklistWorkStatus;
   detailStatus: ChecklistWorkStatus;
